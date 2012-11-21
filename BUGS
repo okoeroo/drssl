@@ -1,0 +1,6 @@
+Known Bugs
+----------
+
+SSLv2 setting still connects to SSLv3.
+
+

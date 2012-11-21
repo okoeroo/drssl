@@ -14,10 +14,23 @@ Oscar Koeroo <okoeroo@gmail.com>
 
 
 Build:
-gcc -o drssl client.c -lssl -lcrypto
+gcc -o drssl drssl.c -lssl -lcrypto
 
 
 Use:
-./drssl
+./drssl --host www.twitter.com
 
+
+Usage:
+./drssl --help
+    --help
+    --host <host or IP>
+    --port <port> - default is: 443
+    --2 (use SSLv2)
+    --3 (use SSLv3)
+    --10 (use TLSv1.0) - the default
+    --11 (use TLSv1.1)
+    --12 (use TLSv1.2)
+    --cafile <path to CA (bundle) file>
+    --capath <path to CA directory>
 

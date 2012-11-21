@@ -5,6 +5,9 @@
 #include <unistd.h>
 #include <string.h>
 #include <strings.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <getopt.h>
 
 #include <netdb.h>
 #include <netinet/in.h>
@@ -74,6 +77,8 @@ struct sslconn {
     BIO *bio;
     int sock;
     SSL *ssl;
+    char *cafile;
+    char *capath;
     unsigned short sslversion;
     char *host_ip;
     unsigned short port;
@@ -84,7 +89,7 @@ struct sslconn {
 
 
 void
-global_init(void) {
+global_ssl_init(void) {
     SSL_library_init();
     SSL_load_error_strings();
 
@@ -145,6 +150,14 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
                         "no valid ciphers provided in \"%s\"\n",
                         CIPHER_LIST);
         return -3;
+    }
+
+    /* Add CA dir info */
+    if ((conn->capath || conn->cafile) &&
+        (1 != SSL_CTX_load_verify_locations(conn->ctx,
+                                            conn->cafile,
+                                            conn->capath))) {
+        fprintf(stderr, "SSL_CTX_load_verify_locations failed\n");
     }
 
     return 0;
@@ -509,10 +522,17 @@ display_conn_info(struct sslconn *conn) {
 int
 connect_to_serv_port (char *servername,
                       unsigned short servport,
-                      unsigned short sslversion) {
+                      unsigned short sslversion,
+                      char *cafile,
+                      char *capath) {
     struct sslconn *conn;
 
     fprintf(stderr, "%s\n", __func__);
+
+    if (!servername) {
+        fprintf(stderr, "Error: no host specified\n");
+        return -1;
+    }
 
     conn = calloc(sizeof(struct sslconn), 1);
     if (conn == NULL)
@@ -520,6 +540,8 @@ connect_to_serv_port (char *servername,
 
     conn->host_ip = servername;
     conn->port    = servport;
+    conn->cafile  = cafile;
+    conn->capath  = capath;
 
     /* Create SSL context */
     if (setup_client_ctx(conn, sslversion) < 0) {
@@ -560,26 +582,125 @@ fail:
 }
 
 
+void
+usage(void) {
+    printf("DrSSL - diagnose your SSL\n");
+    printf("\t--help\n");
+    printf("\t--host <host or IP>\n");
+    printf("\t--port <port> - default is: 443\n");
+    printf("\t--2 (use SSLv2)\n");
+    printf("\t--3 (use SSLv3)\n");
+    printf("\t--10 (use TLSv1.0) - the default\n");
+    printf("\t--11 (use TLSv1.1)\n");
+    printf("\t--12 (use TLSv1.2)\n");
+    printf("\t--cafile <path to CA (bundle) file>\n");
+    printf("\t--capath <path to CA directory>\n");
+    printf("\n");
+
+    return;
+}
 
 
-int main(int argc, char *argv[])
-{
-    /* char *servername    = "192.16.199.166"; */
-    /* char *servername    = "www.twitter.com"; */
-    char *servername    = "sso.nikhef.nl";
+int main(int argc, char *argv[]) {
+    int option_index = 0, c = 0;    /* getopt */
+    int sslversion = 10;
+    char *servername = NULL;
+    char *cafile = NULL;
+    char *capath = NULL;
     unsigned short port = 443;
+    long port_l = 0;
 
-    global_init();
+    static struct option long_options[] = /* options */
+    {
+        {"2",           no_argument,       0, '2'},
+        {"3",           no_argument,       0, '3'},
+        {"10",          no_argument,       0, 'A'},
+        {"11",          no_argument,       0, 'B'},
+        {"12",          no_argument,       0, 'C'},
+        {"help",        no_argument,       0, 'h'},
+        {"host",        required_argument, 0, 'o'},
+        {"port",        required_argument, 0, 'p'},
+        {"cafile",      required_argument, 0, 'F'},
+        {"capath" ,     required_argument, 0, 'P'}
+    };
 
+    opterr = 0;
+    optind = 0;
 
-/*
-    servername = getArgVal ("server", argc, argv);
-    tmpChk     = getArgVal ("port", argc, argv);
-    if (tmpChk)
-        port = (int)strtol(tmpChk, (char **)NULL, 10);
+    /* parse options */
+    while(1){
+        c = getopt_long_only(argc, argv, "", long_options, &option_index);
+        if(c == -1){
+            break;
+        }
+        switch(c){
+            case 'h':
+                usage();
+                return 0;
+            case '2':
+                sslversion = 2;
+                break;
+            case '3':
+                sslversion = 3;
+                break;
+            case 'A':
+                sslversion = 10;
+                break;
+            case 'B':
+                sslversion = 11;
+                break;
+            case 'C':
+                sslversion = 12;
+                break;
+            case 'o':
+                if (optarg)
+                    servername = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case 'p':
+                if (optarg) {
+                    port_l = strtol(optarg, NULL, 10);
+                    if ((port_l < 0) || (port_l > 65535)) {
+                        fprintf(stderr, "Error: value for port is larger then an unsigned 2^16 integer (or short)\n");
+                        return 1;
+                    }
+                    port = port_l;
+                } else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case 'F':
+                if (optarg)
+                    cafile = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case 'P':
+                if (optarg)
+                    capath = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case '?':
+                fprintf(stderr, "Unknown option %s", optarg);
+                break;
+            case ':':
+                fprintf(stderr, "Missing argument for %s", optarg);
+                break;
+        }
+    }
 
-    printf ("Connecting to server %s on port %d\n", servername, port);
-*/
-    return connect_to_serv_port(servername, port, 10);
+    /* OpenSSL init */
+    global_ssl_init();
+
+    return connect_to_serv_port(servername, port, sslversion, cafile, capath);
 }
 
