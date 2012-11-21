@@ -6,3 +6,18 @@
 |_______/ | _| `._____|_______/    |_______/    |_______|
                                                          
 Diagnose your SSL
+-----------------
+
+
+Author:
+Oscar Koeroo <okoeroo@gmail.com>
+
+
+Build:
+gcc -o drssl client.c -lssl -lcrypto
+
+
+Use:
+./drssl
+
+
