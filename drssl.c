@@ -504,6 +504,10 @@ display_conn_info(struct sslconn *conn) {
     struct subjectaltname *p_san, *tmp_p_san;
     char                  *tmp;
     int                    i, depth;
+    uint32_t               random_time;
+    time_t                 server_time_s;
+    struct tm              result;
+    char                   buf[27];
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
     fprintf(stderr, ": Socket no         : %d\n", conn->sock);
@@ -516,6 +520,14 @@ display_conn_info(struct sslconn *conn) {
         case 12: fprintf(stderr, ": SSL/TLS version   : TLS1.2\n"); break;
         default: fprintf(stderr, ": SSL/TLS version   : UNKNOWN\n"); break;
     }
+
+    /* Print the time from the random info */
+    memcpy(&random_time, conn->ssl->s3->server_random, sizeof(uint32_t));
+    server_time_s = ntohl(random_time);
+    gmtime_r(&server_time_s, &result);
+    asctime_r(&result, buf);
+    for (i = 0; i < strlen(buf); i++) { if (buf[i] == '\n' || buf[i] == '\r') buf[i] = '\0'; } /* Remove newline */
+    fprintf(stderr, ": random->unix_time : %lu, %s (utc/zulu)\n", server_time_s, buf);
 
     if (conn->certinfo) {
         fprintf(stderr, ": Certificate?      : %s\n", conn->certinfo->cert ? "Yes" : "No");
@@ -615,7 +627,7 @@ connect_to_serv_port (char *servername,
             fprintf(stderr, "SSL certificate verification passed\n");
             break;
         default:
-            fprintf(stderr, "SSL certification verification error: %ld\n", ssl_verify_result);
+            fprintf(stderr, "SSL certification verification error: %d\n", ssl_verify_result);
     }
 
     fprintf(stderr, "SSL Shutting down.\n");
