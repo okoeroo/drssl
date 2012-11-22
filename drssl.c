@@ -21,6 +21,7 @@
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
+#include <openssl/x509_vfy.h>
 
 #include "queue.h"
 
@@ -110,6 +111,38 @@ x509IsCA(X509 *cert) {
 }
 
 
+/* Custom verification callback */
+int
+verify_callback(int ok, X509_STORE_CTX *store_ctx) {
+    unsigned long   errnum   = X509_STORE_CTX_get_error(store_ctx);
+    int             errdepth = X509_STORE_CTX_get_error_depth(store_ctx);
+    const char *    logstr = "verify_callback";
+    char            subject[256];
+    char            issuer[256];
+
+    X509 *curr_cert = X509_STORE_CTX_get_current_cert(store_ctx);
+
+    fprintf(stderr, "%s: - Re-Verify certificate at depth: %i, pre-OK is: %d\n", logstr, errdepth, ok);
+    X509_NAME_oneline(X509_get_issuer_name(curr_cert), issuer, 256);
+    fprintf(stderr, "%s:  issuer   = %s\n", logstr, issuer);
+    X509_NAME_oneline(X509_get_subject_name(curr_cert), subject, 256);
+    fprintf(stderr, "%s:  subject  = %s\n", logstr, subject);
+    fprintf(stderr, "%s:  errnum %d: %s\n", logstr, (int) errnum, X509_verify_cert_error_string(errnum));
+
+    if (ok != 1) {
+        switch (errnum) {
+            case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+            case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+                fprintf(stderr, "%s: Override Self-Signed certificate error.\n", __func__);
+                ok = 1;
+                break;
+        }
+    }
+
+    return ok;
+}
+
+
 /* Use: 2(SSLv2), 3(SSLv3), 10(TLS1.0), 11(TLS1.1), 12(TLS1.2) */
 int
 setup_client_ctx(struct sslconn *conn, unsigned short type) {
@@ -159,6 +192,9 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
                                             conn->capath))) {
         fprintf(stderr, "SSL_CTX_load_verify_locations failed\n");
     }
+
+    /* Set custom callback */
+    SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
 
     return 0;
 }
@@ -567,6 +603,20 @@ connect_to_serv_port (char *servername,
     /* Display / Show the information we gathered */
     display_conn_info(conn);
 
+
+    int ssl_verify_result;
+    ssl_verify_result = SSL_get_verify_result(conn->ssl);
+    switch (ssl_verify_result) {
+        case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+        case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+            fprintf(stderr, "SSL certificate is self signed\n");
+            break;
+        case X509_V_OK:
+            fprintf(stderr, "SSL certificate verification passed\n");
+            break;
+        default:
+            fprintf(stderr, "SSL certification verification error: %ld\n", ssl_verify_result);
+    }
 
     fprintf(stderr, "SSL Shutting down.\n");
     SSL_shutdown(conn->ssl);
