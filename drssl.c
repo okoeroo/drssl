@@ -508,18 +508,25 @@ display_conn_info(struct sslconn *conn) {
     time_t                 server_time_s;
     struct tm              result;
     char                   buf[27];
+    const SSL_CIPHER      *c;
+
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
     fprintf(stderr, ": Socket no         : %d\n", conn->sock);
     switch (conn->sslversion) {
-        case  0: fprintf(stderr, ": SSL/TLS version   : NONE\n"); break;
-        case  2: fprintf(stderr, ": SSL/TLS version   : SSLv2\n"); break;
-        case  3: fprintf(stderr, ": SSL/TLS version   : SSLv3\n"); break;
-        case 10: fprintf(stderr, ": SSL/TLS version   : TLS1.0\n"); break;
-        case 11: fprintf(stderr, ": SSL/TLS version   : TLS1.1\n"); break;
-        case 12: fprintf(stderr, ": SSL/TLS version   : TLS1.2\n"); break;
-        default: fprintf(stderr, ": SSL/TLS version   : UNKNOWN\n"); break;
+        case  0: fprintf(stderr, ": Wished SSL version: NONE\n"); break;
+        case  2: fprintf(stderr, ": Wished SSL version: SSLv2\n"); break;
+        case  3: fprintf(stderr, ": Wished SSL version: SSLv3\n"); break;
+        case 10: fprintf(stderr, ": Wished SSL version: TLS1.0\n"); break;
+        case 11: fprintf(stderr, ": Wished SSL version: TLS1.1\n"); break;
+        case 12: fprintf(stderr, ": Wished SSL version: TLS1.2\n"); break;
+        default: fprintf(stderr, ": Wished SSL version: UNKNOWN\n"); break;
     }
+    /* int SSL_version(conn->ssl); */
+    /* DTLS1_VERSION */
+
+    c = SSL_get_current_cipher(conn->ssl);
+    fprintf(stderr, ": SSL Ciphers used  : %s / %s\n", SSL_CIPHER_get_name(c), SSL_CIPHER_get_version(c));
 
     /* Print the time from the random info */
     memcpy(&random_time, conn->ssl->s3->server_random, sizeof(uint32_t));
@@ -551,7 +558,6 @@ display_conn_info(struct sslconn *conn) {
                 conn->certinfo->found_ca = 1;
             }
         }
-
 
         for (p_san = TAILQ_FIRST(&(conn->certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
             fprintf(stderr, ": Subject Alt Name  : %s\n", p_san->value);
