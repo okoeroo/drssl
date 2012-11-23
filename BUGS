@@ -2,5 +2,4 @@ Known Bugs
 ----------
 
 SSLv2 setting still connects to SSLv3.
-
-
+Wildcard Subject Alt Names or commonname matching
