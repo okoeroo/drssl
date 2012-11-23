@@ -68,8 +68,9 @@ struct certinfo {
     X509            *cert;
     STACK_OF(X509)  *stack;
     char            *commonname;
-    unsigned short   peer_uses_ca;
-    unsigned short   found_ca;
+    unsigned short   peer_uses_selfsigned;
+    unsigned short   peer_has_ca_true;
+    unsigned short   found_ca_in_stack;
 
     TAILQ_HEAD(, subjectaltname) san_head;
 };
@@ -84,6 +85,7 @@ struct sslconn {
     char *capath;
     unsigned short sslversion;
     char *host_ip;
+    char *sni;
     unsigned short port;
     unsigned short use_post_ssl_connection_checks;
     struct certinfo *certinfo;
@@ -153,19 +155,29 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
 
     X509 *curr_cert = X509_STORE_CTX_get_current_cert(store_ctx);
 
-    fprintf(stderr, "%s: - Re-Verify certificate at depth: %i, pre-OK is: %d\n", logstr, errdepth, ok);
+    fprintf(stderr, "%s: - Re-Verify certificate at depth: %i, pre-OK is: %d\n",
+                    logstr, errdepth, ok);
     X509_NAME_oneline(X509_get_issuer_name(curr_cert), issuer, 256);
     fprintf(stderr, "%s:  issuer   = %s\n", logstr, issuer);
     X509_NAME_oneline(X509_get_subject_name(curr_cert), subject, 256);
     fprintf(stderr, "%s:  subject  = %s\n", logstr, subject);
-    fprintf(stderr, "%s:  errnum %d: %s\n", logstr, (int) errnum, X509_verify_cert_error_string(errnum));
 
     if (ok != 1) {
         switch (errnum) {
             case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
             case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-                fprintf(stderr, "%s: Override Self-Signed certificate error.\n", __func__);
+                fprintf(stderr, "%s: Override Self-Signed certificate error.\n",
+                                __func__);
                 ok = 1;
+                break;
+            case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+                fprintf(stderr, "%s: Unable to find the issuer (locally on disk) of the certificate now in evaluation.\n"\
+                                "\tOptions: 1. Certificate was signed by an unknown CA, see the --capath and --cafile options to solve this perhaps.\n"\
+                                "\t         2. The server didn't send an intermediate CA certificate to complete the certificate chain\n", __func__);
+                break;
+            default:
+                fprintf(stderr, "%s:  errnum %d: %s\n",
+                                logstr, (int) errnum, X509_verify_cert_error_string(errnum));
                 break;
         }
     }
@@ -203,7 +215,8 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
             break;
 #endif
         default:
-            fprintf(stderr, "Wrong SSL version/type provided to %s()\n", __func__);
+            fprintf(stderr, "Wrong SSL version/type provided to %s()\n",
+                    __func__);
             return -2;
     }
     conn->sslversion = type;
@@ -227,23 +240,9 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
     /* Set custom callback */
     SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
 
-
     /* Set up OCSP Stapling callback setup */
     SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
     SSL_CTX_set_tlsext_status_arg(conn->ctx, conn);
-
-#if 0 /* Example TLS SNI (Server Name Indication */
-    if (servername != NULL)
-    {
-        if (!SSL_set_tlsext_host_name(con,servername))
-        {
-            BIO_printf(bio_err,"Unable to set TLS servername extension.\n");
-            ERR_print_errors(bio_err);
-            goto end;
-        }
-    }
-#endif
-
 
     return 0;
 }
@@ -274,7 +273,8 @@ create_client_socket (int * client_socket,
     snprintf(portstr, 24, "%d", port);
     rc = getaddrinfo(server, &portstr[0], &hints, &res);
     if (rc != 0) {
-        fprintf(stderr, "Error: Failed to getaddrinfo (%s, %s, *, *)\n", server, portstr);
+        fprintf(stderr, "Error: Failed to getaddrinfo (%s, %s, *, *)\n",
+                server, portstr);
         return 1;
     }
 
@@ -287,7 +287,8 @@ create_client_socket (int * client_socket,
 
 
     /* Grab timeout setting */
-    if (getsockopt (mysock, SOL_SOCKET, SO_RCVTIMEO, (char *)&preset_tv, &preset_tvlen) < 0) {
+    if (getsockopt(mysock, SOL_SOCKET, SO_RCVTIMEO,
+                   (char *)&preset_tv, &preset_tvlen) < 0) {
         fprintf(stderr, "Error: Failed to get the timeout setting\n");
         return 1;
     }
@@ -297,7 +298,8 @@ create_client_socket (int * client_socket,
     wait_tv = (struct timeval *) malloc (sizeof (struct timeval));
     wait_tv->tv_sec = (time_out_milliseconds - (time_out_milliseconds % 1000)) / 1000;
     wait_tv->tv_usec = (time_out_milliseconds % 1000) * 1000;
-    if (setsockopt (mysock, SOL_SOCKET, SO_RCVTIMEO, (char *)wait_tv, sizeof *wait_tv) < 0) {
+    if (setsockopt(mysock, SOL_SOCKET, SO_RCVTIMEO,
+                   (char *)wait_tv, sizeof *wait_tv) < 0) {
         fprintf(stderr, "Error: Failed to set the timeout setting\n");
         return 1;
     }
@@ -339,7 +341,8 @@ connect_bio_to_serv_port(struct sslconn *conn) {
                         conn->host_ip, conn->port);
         return -2;
     }
-    fprintf(stderr, "Connected to \"%s\" on port \'%d\'\n", conn->host_ip, conn->port);
+    fprintf(stderr, "Connected to \"%s\" on port \'%d\'\n",
+            conn->host_ip, conn->port);
     conn->sock = sock;
     return 0;
 }
@@ -359,6 +362,11 @@ connect_ssl_over_socket(struct sslconn *conn) {
 
     /* Setup OCSP stapling on the SSL object */
     SSL_set_tlsext_status_type(conn->ssl, TLSEXT_STATUSTYPE_ocsp);
+
+    /* Set TLS SNI (Server Name Indication) */
+    if (conn->sni && !SSL_set_tlsext_host_name(conn->ssl, conn->sni)) {
+        fprintf(stderr, "Unable to set TLS servername extension (SNI).\n");
+    }
 
     /* Connecting the Socket to the SSL layer */
     conn->bio = BIO_new_socket (conn->sock, BIO_NOCLOSE);
@@ -386,8 +394,10 @@ extract_subjectaltnames(struct sslconn *conn) {
     int i, j, extcount;
     unsigned short found_san = 0;
     X509_EXTENSION          *ext;
-    int                     NID_from_ext = NID_undef; /* Initialize with undefined NID (Numerical ID
-                                                      of a type of ASN1 object) */
+    int                     NID_from_ext = NID_undef; /* Initialize with undefined NID
+                                                         (Numerical ID of a
+                                                         type of ASN1 object)
+                                                         */
     const unsigned char     *data;
     STACK_OF(CONF_VALUE)    *val;
     CONF_VALUE              *nval;
@@ -419,7 +429,9 @@ extract_subjectaltnames(struct sslconn *conn) {
 
 #if (OPENSSL_VERSION_NUMBER > 0x00907000L)
                 if (meth->it)
-                    ext_str = ASN1_item_d2i(NULL, &data, ext->value->length, ASN1_ITEM_ptr(meth->it));
+                    ext_str = ASN1_item_d2i(NULL, &data,
+                                            ext->value->length,
+                                            ASN1_ITEM_ptr(meth->it));
                 else
                     ext_str = meth->d2i(NULL, &data, ext->value->length);
 #else
@@ -455,7 +467,8 @@ extract_subjectaltnames(struct sslconn *conn) {
                         return -11;
                     }
 
-                    TAILQ_INSERT_TAIL(&(conn->certinfo->san_head), p_san, entries);
+                    TAILQ_INSERT_TAIL(&(conn->certinfo->san_head),
+                                      p_san, entries);
                 }
             }
         }
@@ -536,15 +549,17 @@ extract_peer_certinfo(struct sslconn *conn) {
         return -6;
     }
 
-    /* Check if peer cert is a CA */
-    conn->certinfo->peer_uses_ca = x509IsCA(conn->certinfo->cert);
+    /* Check if peer cert is a CA, or something */
+    conn->certinfo->peer_uses_selfsigned = (X509_NAME_cmp(X509_get_subject_name(conn->certinfo->cert),
+                                                          X509_get_issuer_name (conn->certinfo->cert)) == 0);
+    conn->certinfo->peer_has_ca_true     = x509IsCA(conn->certinfo->cert);
 
     /* Got Root CA / self-signed CA from the service */
     depth = sk_X509_num(conn->certinfo->stack);
     for (i = 0; i < depth; i++) {
         if (X509_NAME_cmp(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)),
                           X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i))) == 0) {
-            conn->certinfo->found_ca = 1;
+            conn->certinfo->found_ca_in_stack = 1;
         }
     }
 
@@ -570,6 +585,7 @@ display_conn_info(struct sslconn *conn) {
 
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
+    fprintf(stderr, ": TLS ext SNI       : %s\n", conn->sni ? conn->sni : "not set");
     fprintf(stderr, ": Socket number     : %d\n", conn->sock);
     switch (conn->sslversion) {
         case  0: fprintf(stderr, ": Wished SSL version: NONE\n"); break;
@@ -584,28 +600,35 @@ display_conn_info(struct sslconn *conn) {
     /* DTLS1_VERSION */
 
     c = SSL_get_current_cipher(conn->ssl);
-    fprintf(stderr, ": SSL Ciphers used  : %s / %s\n", SSL_CIPHER_get_name(c), SSL_CIPHER_get_version(c));
+    fprintf(stderr, ": SSL Ciphers used  : %s / %s\n",
+                    SSL_CIPHER_get_name(c), SSL_CIPHER_get_version(c));
 
     comp = SSL_get_current_compression(conn->ssl);
-    fprintf(stderr, ": SSL Compression   : %s\n", comp ? SSL_COMP_get_name(comp) : "NONE");
+    fprintf(stderr, ": SSL Compression   : %s\n",
+                    comp ? SSL_COMP_get_name(comp) : "NONE");
 
     expansion = SSL_get_current_expansion(conn->ssl);
-    fprintf(stderr, ": SSL Expansion     : %s\n", expansion ? SSL_COMP_get_name(expansion) : "NONE");
+    fprintf(stderr, ": SSL Expansion     : %s\n",
+                    expansion ? SSL_COMP_get_name(expansion) : "NONE");
 
     /* Print the time from the random info */
     memcpy(&random_time, conn->ssl->s3->server_random, sizeof(uint32_t));
     server_time_s = ntohl(random_time);
     gmtime_r(&server_time_s, &result);
     asctime_r(&result, buf);
-    for (i = 0; i < strlen(buf); i++) { if (buf[i] == '\n' || buf[i] == '\r') buf[i] = '\0'; } /* Remove newline */
-    fprintf(stderr, ": random->unix_time : %lu, %s (utc/zulu)\n", server_time_s, buf);
+    for (i = 0; i < strlen(buf); i++) {
+        /* Remove newline */
+        if (buf[i] == '\n' || buf[i] == '\r') buf[i] = '\0';
+    }
+    fprintf(stderr, ": random->unix_time : %lu, %s (utc/zulu)\n",
+                    server_time_s, buf);
 
     if (conn->certinfo) {
         fprintf(stderr, ": Certificate?      : %s\n", conn->certinfo->cert ? "Yes" : "No");
         fprintf(stderr, ": Stack?            : %s\n", conn->certinfo->stack ? "Yes" : "No");
-        fprintf(stderr, ": Root CA in stack? : %s\n", conn->certinfo->found_ca ? "Yes" : "No");
-        fprintf(stderr, ": Self-Signed peer? : %s\n", conn->certinfo->peer_uses_ca ? "Yes" : "No");
-        fprintf(stderr, ": Peer Signed peer? : %s\n", conn->certinfo->peer_uses_ca ? "Yes" : "No");
+        fprintf(stderr, ": Root CA in stack? : %s\n", conn->certinfo->found_ca_in_stack ? "Yes" : "No");
+        fprintf(stderr, ": Self-Signed peer? : %s\n", conn->certinfo->peer_uses_selfsigned ? "Yes" : "No");
+        fprintf(stderr, ": Peer has CA:True  : %s\n", conn->certinfo->peer_has_ca_true ? "Yes" : "No");
 
         if (conn->certinfo->cert) {
             pktmp = X509_get_pubkey(conn->certinfo->cert);
@@ -617,21 +640,19 @@ display_conn_info(struct sslconn *conn) {
             depth = sk_X509_num(conn->certinfo->stack);
             for (i = 0; i < depth; i++) {
                 tmp = X509_NAME_oneline(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-                fprintf(stderr, ": Subject DN        : %-2d%*s %s\n", i, i + 2, "-|", tmp);
+                fprintf(stderr, ": Subject DN        : %-2d%*s %s\n",
+                                i, i + 2, "-|", tmp);
                 free(tmp);
 
                 tmp = X509_NAME_oneline(X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-                fprintf(stderr, ": Issuer DN         : %-2d%*s %s\n", i, i + 2, "-|", tmp);
+                fprintf(stderr, ": Issuer DN         : %-2d%*s %s\n",
+                                i, i + 2, "-|", tmp);
                 free(tmp);
 
                 pktmp = X509_get_pubkey(sk_X509_value(conn->certinfo->stack, i));
-                fprintf(stderr, ": Public key bits(s): %-2d%*s %d\n", i, i + 2, "-|", EVP_PKEY_bits(pktmp));
+                fprintf(stderr, ": Public key bits(s): %-2d%*s %d\n",
+                                i, i + 2, "-|", EVP_PKEY_bits(pktmp));
                 EVP_PKEY_free(pktmp);
-
-                if (X509_NAME_cmp(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)),
-                                  X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i))) == 0) {
-                    conn->certinfo->found_ca = 1;
-                }
             }
         }
 
@@ -663,7 +684,7 @@ void
 diagnose_conn_info(struct sslconn *conn) {
     struct subjectaltname *p_san, *tmp_p_san;
     char                  *tmp;
-    int                    i, depth;
+    int                    i, depth, bits;
     uint32_t               random_time;
     time_t                 server_time_s;
     struct tm              result;
@@ -671,43 +692,130 @@ diagnose_conn_info(struct sslconn *conn) {
     const SSL_CIPHER      *c;
     EVP_PKEY              *pktmp;
     unsigned short         found_san = 0;
+    int                    ssl_verify_result;
 
     if (!conn)
         return;
 
     fprintf(stderr, "=== Diagnoses ===\n");
 
-    /* Time on server, random or a big deviation */
+    ssl_verify_result = SSL_get_verify_result(conn->ssl);
+    switch (ssl_verify_result) {
+        case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+        case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+            fprintf(stderr, ": SSL certificate is self signed\n");
+            break;
+        case X509_V_OK:
+            fprintf(stderr, ": SSL certificate verification passed\n");
+            break;
+        default:
+            fprintf(stderr, ": SSL certification verification error: %d\n",
+                            ssl_verify_result);
+    }
+
+
+    /* TODO: Time on server, random or a big deviation */
+
 
     /* RFC2818 compliance, i.e. Got SAN?->Check SAN, leave CN. No SAN?
      * (seriously...)->Check CN.
      * Or bypass all and check something else known. (Not implemented yet) */
     if (conn->certinfo) {
+        /* Certificate stack details */
+        if (conn->certinfo->found_ca_in_stack) {
+            fprintf(stderr, ": Warning: Server configuration error, a Root CA was "\
+                            "sent by the service. SSL stack must ignore this certificate.\n");
+        }
+        if (conn->certinfo->peer_has_ca_true) {
+            fprintf(stderr, ": Error: The peer/host certificate has the CA:True setting in "\
+                            "the certificate, faking a CA. This is needs to be fixed.\n");
+        }
+        if (conn->certinfo->peer_uses_selfsigned) {
+            fprintf(stderr, ": Error: The peer/host certificate uses a self-signed certificate. "\
+                            "Establishing trust is impossible\n");
+        }
+
+        /* Subject Alt Name matching based on RFC2818 */
         if (TAILQ_EMPTY(&(conn->certinfo->san_head))) {
-            fprintf(stderr, ": RFC2818 Warning: Peer certificate is a legacy certificate as it features no Subject Alt Names\n");
+            fprintf(stderr, ": RFC2818 Warning: Peer certificate is a legacy "\
+                            "certificate as it features no Subject Alt Names\n");
 
             /* Check Common Name */
             if (!strcasecmp(conn->certinfo->commonname, conn->host_ip)) {
-                fprintf(stderr, ": RFC2818 : ok, legacy peer certificate matched most significant Common Name.\n");
+                fprintf(stderr, ": RFC2818 : ok, legacy peer certificate "\
+                                "matched most significant Common Name.\n");
             } else {
-                fprintf(stderr, ": RFC2818 failure: legacy peer certificate's most significant Common Name did not match the Hostname or IP address of the server.\n");
+                fprintf(stderr, ": RFC2818 Failure: legacy peer certificate's "\
+                                "most significant Common Name did not match the "\
+                                "Hostname or IP address of the server. Untrusted "\
+                                "connection.\n");
             }
         } else {
             /* Check SAN */
             for (p_san = TAILQ_FIRST(&(conn->certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
                 if (!strcasecmp(p_san->value, conn->host_ip)) {
-                    fprintf(stderr, ": RFC2818 : ok, peer certificate matched Subject Alt Name\n");
+                    fprintf(stderr, ": RFC2818 : ok, peer certificate matched "\
+                                    "Subject Alt Name\n");
                     found_san = 1;
                 }
                 tmp_p_san = TAILQ_NEXT(p_san, entries);
             }
             if (!found_san) {
-                fprintf(stderr, ": RFC2818 failure: Peer certificate has Subject Alt Names, but none match the Hostname or IP address of the server.\n");
+                fprintf(stderr, ": RFC2818 Failure: Peer certificate has "\
+                                "Subject Alt Names, but none match the "\
+                                "Hostname or IP address of the server. "\
+                                "Untrusted connection.\n");
+            }
+        }
+
+        /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
+        if (conn->certinfo->cert) {
+            pktmp = X509_get_pubkey(conn->certinfo->cert);
+            bits = EVP_PKEY_bits(pktmp);
+            if (bits < 1024) {
+                fprintf(stderr, ": The peer certificate is a small and weak public key length of %d bits. "\
+                                "This is really really bad. This means the security of the certificate can "\
+                                "be easily broken with a fast enough computer. Advise: replace it NOW with a new "\
+                                "certificate of at least 1024 bits, preferable 2048 bits or more.", bits);
+            } else if (bits < 1400) {
+                fprintf(stderr, ": The peer certificate has a weak public key length of %d bits. "\
+                                "This means the security of the certificate can be broken with a fast "\
+                                "enough computer. Advise: replace it with a higher quality certificate of at "\
+                                "least 2048 bits.\n", bits);
+            } else if (bits >= 1400) {
+                fprintf(stderr, ": The peer certificate is a has a strong public key length of %d bits. "\
+                                "This means the security of the certificate is ok\n", bits);
+            }
+            EVP_PKEY_free(pktmp);
+        }
+
+        /* Checking intermediate CAs, if any */
+        if (conn->certinfo->stack) {
+            depth = sk_X509_num(conn->certinfo->stack);
+            for (i = 0; i < depth; i++) {
+                pktmp = X509_get_pubkey(sk_X509_value(conn->certinfo->stack, i));
+                bits = EVP_PKEY_bits(pktmp);
+                EVP_PKEY_free(pktmp);
+
+                tmp = X509_NAME_oneline(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
+                if (bits < 1024) {
+                    fprintf(stderr, ": The certificate with Subject DN \"%s\" is a small and weak public key length of \'%d\' bits. "\
+                                    "This is really really bad. This means the security of the certificate can "\
+                                    "be easily broken with a fast enough computer. Advise: replace it NOW with a new "\
+                                    "certificate of at least 1024 bits, preferable 2048 bits or more.", tmp, bits);
+                } else if (bits < 1400) {
+                    fprintf(stderr, ": The certificate with Subject DN \"%s\" has a weak public key length of \'%d\' bits. "\
+                                    "This means the security of the certificate can be broken with a fast "\
+                                    "enough computer. Advise: replace it with a higher quality certificate of at "\
+                                    "least 2048 bits.\n", tmp, bits);
+                } else if (bits >= 1400) {
+                    fprintf(stderr, ": The certificate with Subject DN \"%s\" has a strong public key length of \'%d\' bits. "\
+                                    "This means the security of the certificate is ok\n", tmp, bits);
+                }
+                free(tmp);
             }
         }
     }
-
-    /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
 
 
     /* OCSP check, stapled, non-stapled (could use libcurl here) */
@@ -722,7 +830,8 @@ connect_to_serv_port (char *servername,
                       unsigned short servport,
                       unsigned short sslversion,
                       char *cafile,
-                      char *capath) {
+                      char *capath,
+                      char *sni) {
     struct sslconn *conn;
 
     fprintf(stderr, "%s\n", __func__);
@@ -740,6 +849,7 @@ connect_to_serv_port (char *servername,
     conn->port    = servport;
     conn->cafile  = cafile;
     conn->capath  = capath;
+    conn->sni     = sni;
 
     /* Create SSL context */
     if (setup_client_ctx(conn, sslversion) < 0) {
@@ -768,20 +878,6 @@ connect_to_serv_port (char *servername,
     /* Display / Show the information we gathered */
     diagnose_conn_info(conn);
 
-    int ssl_verify_result;
-    ssl_verify_result = SSL_get_verify_result(conn->ssl);
-    switch (ssl_verify_result) {
-        case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
-        case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-            fprintf(stderr, "SSL certificate is self signed\n");
-            break;
-        case X509_V_OK:
-            fprintf(stderr, "SSL certificate verification passed\n");
-            break;
-        default:
-            fprintf(stderr, "SSL certification verification error: %d\n", ssl_verify_result);
-    }
-
     fprintf(stderr, "SSL Shutting down.\n");
     SSL_shutdown(conn->ssl);
     fprintf(stderr, "SSL Connection closed\n");
@@ -809,6 +905,7 @@ usage(void) {
     printf("\t--12 (use TLSv1.2)\n");
     printf("\t--cafile <path to CA (bundle) file>\n");
     printf("\t--capath <path to CA directory>\n");
+    printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
     printf("\n");
 
     return;
@@ -821,6 +918,7 @@ int main(int argc, char *argv[]) {
     char *servername = NULL;
     char *cafile = NULL;
     char *capath = NULL;
+    char *sni = NULL;
     unsigned short port = 443;
     long port_l = 0;
 
@@ -834,6 +932,7 @@ int main(int argc, char *argv[]) {
         {"help",        no_argument,       0, 'h'},
         {"host",        required_argument, 0, 'o'},
         {"port",        required_argument, 0, 'p'},
+        {"sni",         required_argument, 0, 's'},
         {"cafile",      required_argument, 0, 'F'},
         {"capath" ,     required_argument, 0, 'P'}
     };
@@ -866,6 +965,14 @@ int main(int argc, char *argv[]) {
             case 'C':
                 sslversion = 12;
                 break;
+            case 's':
+                if (optarg)
+                    sni = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
             case 'o':
                 if (optarg)
                     servername = optarg;
@@ -878,7 +985,8 @@ int main(int argc, char *argv[]) {
                 if (optarg) {
                     port_l = strtol(optarg, NULL, 10);
                     if ((port_l < 0) || (port_l > 65535)) {
-                        fprintf(stderr, "Error: value for port is larger then an unsigned 2^16 integer (or short)\n");
+                        fprintf(stderr, "Error: value for port is larger then "\
+                                        "an unsigned 2^16 integer (or short)\n");
                         return 1;
                     }
                     port = port_l;
@@ -915,6 +1023,6 @@ int main(int argc, char *argv[]) {
     /* OpenSSL init */
     global_ssl_init();
 
-    return connect_to_serv_port(servername, port, sslversion, cafile, capath);
+    return connect_to_serv_port(servername, port, sslversion, cafile, capath, sni);
 }
 
