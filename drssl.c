@@ -22,6 +22,7 @@
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 #include <openssl/x509_vfy.h>
+#include <openssl/ocsp.h>
 
 #include "queue.h"
 
@@ -111,6 +112,37 @@ x509IsCA(X509 *cert) {
 }
 
 
+/* OCSP callback */
+static int
+ocsp_resp_cb(SSL *s, void *arg) {
+    struct sslconn *conn = (struct sslconn *)arg;
+    OCSP_RESPONSE *rsp;
+    const unsigned char *p;
+    int len;
+
+
+    BIO *bio_err;
+    bio_err = BIO_new_fp(stderr,BIO_NOCLOSE);
+
+    len = SSL_get_tlsext_status_ocsp_resp(s, &p);
+    fprintf(stderr, "OCSP response: ");
+    if (!p) {
+        fprintf(stderr, "no response sent\n");
+        return 1;
+    }
+    rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
+    if (!rsp) {
+        fprintf(stderr, "response parse error\n");
+        BIO_dump_indent(bio_err, (char *)p, len, 4);
+        return 0;
+    }
+    BIO_puts(bio_err, "\n======================================\n");
+    OCSP_RESPONSE_print(bio_err, rsp, 0);
+    BIO_puts(bio_err, "======================================\n");
+    OCSP_RESPONSE_free(rsp);
+    return 1;
+}
+
 /* Custom verification callback */
 int
 verify_callback(int ok, X509_STORE_CTX *store_ctx) {
@@ -195,6 +227,24 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
 
     /* Set custom callback */
     SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
+
+
+    /* Set up OCSP Stapling callback setup */
+    SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
+    SSL_CTX_set_tlsext_status_arg(conn->ctx, NULL);
+
+#if 0 /* Example TLS SNI (Server Name Indication */
+    if (servername != NULL)
+    {
+        if (!SSL_set_tlsext_host_name(con,servername))
+        {
+            BIO_printf(bio_err,"Unable to set TLS servername extension.\n");
+            ERR_print_errors(bio_err);
+            goto end;
+        }
+    }
+#endif
+
 
     return 0;
 }
@@ -308,6 +358,8 @@ connect_ssl_over_socket(struct sslconn *conn) {
         return -2;
     }
 
+    /* Setup OCSP stapling on the SSL object */
+    SSL_set_tlsext_status_type(conn->ssl, TLSEXT_STATUSTYPE_ocsp);
 
     /* Connecting the Socket to the SSL layer */
     conn->bio = BIO_new_socket (conn->sock, BIO_NOCLOSE);
@@ -323,6 +375,9 @@ connect_ssl_over_socket(struct sslconn *conn) {
         fprintf(stderr, "Error connecting SSL\n");
         return -4;
     }
+
+
+
     return 0;
 }
 
@@ -510,6 +565,7 @@ display_conn_info(struct sslconn *conn) {
     char                   buf[27];
     const SSL_CIPHER      *c;
     EVP_PKEY              *pktmp;
+    const COMP_METHOD     *comp, *expansion;
 
     fprintf(stderr, "=== Report ===\n");
 
@@ -530,6 +586,12 @@ display_conn_info(struct sslconn *conn) {
 
     c = SSL_get_current_cipher(conn->ssl);
     fprintf(stderr, ": SSL Ciphers used  : %s / %s\n", SSL_CIPHER_get_name(c), SSL_CIPHER_get_version(c));
+
+    comp = SSL_get_current_compression(conn->ssl);
+    fprintf(stderr, ": SSL Compression   : %s\n", comp ? SSL_COMP_get_name(comp) : "NONE");
+
+    expansion = SSL_get_current_expansion(conn->ssl);
+    fprintf(stderr, ": SSL Expansion     : %s\n", expansion ? SSL_COMP_get_name(expansion) : "NONE");
 
     /* Print the time from the random info */
     memcpy(&random_time, conn->ssl->s3->server_random, sizeof(uint32_t));
