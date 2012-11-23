@@ -708,6 +708,12 @@ diagnose_conn_info(struct sslconn *conn) {
     }
 
     /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
+
+
+    /* OCSP check, stapled, non-stapled (could use libcurl here) */
+
+
+    /* CRL check, (could use libcurl here) */
     return;
 }
 
