@@ -79,6 +79,7 @@ struct sslconn {
     BIO *bio;
     int sock;
     SSL *ssl;
+    OCSP_RESPONSE   *ocsp_stapling;
     char *cafile;
     char *capath;
     unsigned short sslversion;
@@ -120,10 +121,6 @@ ocsp_resp_cb(SSL *s, void *arg) {
     const unsigned char *p;
     int len;
 
-
-    BIO *bio_err;
-    bio_err = BIO_new_fp(stderr,BIO_NOCLOSE);
-
     len = SSL_get_tlsext_status_ocsp_resp(s, &p);
     fprintf(stderr, "OCSP response: ");
     if (!p) {
@@ -133,13 +130,15 @@ ocsp_resp_cb(SSL *s, void *arg) {
     rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
     if (!rsp) {
         fprintf(stderr, "response parse error\n");
-        BIO_dump_indent(bio_err, (char *)p, len, 4);
-        return 0;
+        return 1;
     }
-    BIO_puts(bio_err, "\n======================================\n");
-    OCSP_RESPONSE_print(bio_err, rsp, 0);
-    BIO_puts(bio_err, "======================================\n");
-    OCSP_RESPONSE_free(rsp);
+    fprintf(stderr, "got stapled response\n");
+
+    /* Record stapled response */
+    if (conn) {
+        conn->ocsp_stapling = rsp;
+    }
+
     return 1;
 }
 
@@ -231,7 +230,7 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
 
     /* Set up OCSP Stapling callback setup */
     SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
-    SSL_CTX_set_tlsext_status_arg(conn->ctx, NULL);
+    SSL_CTX_set_tlsext_status_arg(conn->ctx, conn);
 
 #if 0 /* Example TLS SNI (Server Name Indication */
     if (servername != NULL)
@@ -641,6 +640,16 @@ display_conn_info(struct sslconn *conn) {
             tmp_p_san = TAILQ_NEXT(p_san, entries);
         }
         fprintf(stderr, ": Common name       : %s\n", conn->certinfo->commonname);
+
+        fprintf(stderr, ": OCSP Stapling     : %s\n", conn->ocsp_stapling ? "Yes" : "No");
+        if (conn->ocsp_stapling) {
+            BIO *bio_err;
+            fprintf(stderr, ": OCSP Stapled Resp.:\n");
+
+            bio_err = BIO_new_fp(stderr,BIO_NOCLOSE);
+            OCSP_RESPONSE_print(bio_err, conn->ocsp_stapling, 0);
+            BIO_puts(bio_err, "\n");
+        }
 
     } else {
         fprintf(stderr, ": No Certificate info from.\n");
