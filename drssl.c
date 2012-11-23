@@ -60,7 +60,7 @@ struct subjectaltname {
     char     *value;
     san_type type;
 
-    TAILQ_ENTRY(subjectaltnames) entries;
+    TAILQ_ENTRY(subjectaltname) entries;
 };
 
 struct certinfo {
@@ -70,7 +70,7 @@ struct certinfo {
     unsigned short   peer_uses_ca;
     unsigned short   found_ca;
 
-    TAILQ_HEAD(, subjectaltnames) san_head;
+    TAILQ_HEAD(, subjectaltname) san_head;
 };
 
 struct sslconn {
@@ -334,12 +334,12 @@ extract_subjectaltnames(struct sslconn *conn) {
     X509_EXTENSION          *ext;
     int                     NID_from_ext = NID_undef; /* Initialize with undefined NID (Numerical ID
                                                       of a type of ASN1 object) */
-    unsigned char           *data;
+    const unsigned char     *data;
     STACK_OF(CONF_VALUE)    *val;
     CONF_VALUE              *nval;
-    X509V3_EXT_METHOD       *meth;
+    const X509V3_EXT_METHOD *meth;
     void                    *ext_str = NULL;
-    struct subjectaltname  *p_san;
+    struct subjectaltname   *p_san;
 
     fprintf(stderr, "%s\n", __func__);
 
@@ -511,9 +511,11 @@ display_conn_info(struct sslconn *conn) {
     const SSL_CIPHER      *c;
     EVP_PKEY              *pktmp;
 
+    fprintf(stderr, "=== Report ===\n");
+
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
-    fprintf(stderr, ": Socket no         : %d\n", conn->sock);
+    fprintf(stderr, ": Socket number     : %d\n", conn->sock);
     switch (conn->sslversion) {
         case  0: fprintf(stderr, ": Wished SSL version: NONE\n"); break;
         case  2: fprintf(stderr, ": Wished SSL version: SSLv2\n"); break;
@@ -546,7 +548,7 @@ display_conn_info(struct sslconn *conn) {
 
         if (conn->certinfo->cert) {
             pktmp = X509_get_pubkey(conn->certinfo->cert);
-            fprintf(stderr, ": Public key bits   : %d\n", EVP_PKEY_bits(pktmp));
+            fprintf(stderr, ": Public key bits(p): %d\n", EVP_PKEY_bits(pktmp));
             EVP_PKEY_free(pktmp);
         }
 
@@ -560,6 +562,10 @@ display_conn_info(struct sslconn *conn) {
                 tmp = X509_NAME_oneline(X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
                 fprintf(stderr, ": Issuer DN         : %-2d%*s %s\n", i, i + 2, "-|", tmp);
                 free(tmp);
+
+                pktmp = X509_get_pubkey(sk_X509_value(conn->certinfo->stack, i));
+                fprintf(stderr, ": Public key bits(s): %-2d%*s %d\n", i, i + 2, "-|", EVP_PKEY_bits(pktmp));
+                EVP_PKEY_free(pktmp);
 
                 if (X509_NAME_cmp(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)),
                                   X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i))) == 0) {
@@ -581,6 +587,58 @@ display_conn_info(struct sslconn *conn) {
     return;
 }
 
+
+void
+diagnose_conn_info(struct sslconn *conn) {
+    struct subjectaltname *p_san, *tmp_p_san;
+    char                  *tmp;
+    int                    i, depth;
+    uint32_t               random_time;
+    time_t                 server_time_s;
+    struct tm              result;
+    char                   buf[27];
+    const SSL_CIPHER      *c;
+    EVP_PKEY              *pktmp;
+    unsigned short         found_san = 0;
+
+    if (!conn)
+        return;
+
+    fprintf(stderr, "=== Diagnoses ===\n");
+
+    /* Time on server, random or a big deviation */
+
+    /* RFC2818 compliance, i.e. Got SAN?->Check SAN, leave CN. No SAN?
+     * (seriously...)->Check CN.
+     * Or bypass all and check something else known. (Not implemented yet) */
+    if (conn->certinfo) {
+        if (TAILQ_EMPTY(&(conn->certinfo->san_head))) {
+            fprintf(stderr, ": RFC2818 Warning: Peer certificate is a legacy certificate as it features no Subject Alt Names\n");
+
+            /* Check Common Name */
+            if (!strcasecmp(conn->certinfo->commonname, conn->host_ip)) {
+                fprintf(stderr, ": RFC2818 : ok, legacy peer certificate matched most significant Common Name.\n");
+            } else {
+                fprintf(stderr, ": RFC2818 failure: legacy peer certificate's most significant Common Name did not match the Hostname or IP address of the server.\n");
+            }
+        } else {
+            /* Check SAN */
+            for (p_san = TAILQ_FIRST(&(conn->certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
+                if (!strcasecmp(p_san->value, conn->host_ip)) {
+                    fprintf(stderr, ": RFC2818 : ok, peer certificate matched Subject Alt Name\n");
+                    found_san = 1;
+                }
+                tmp_p_san = TAILQ_NEXT(p_san, entries);
+            }
+            if (!found_san) {
+                fprintf(stderr, ": RFC2818 failure: Peer certificate has Subject Alt Names, but none match the Hostname or IP address of the server.\n");
+            }
+        }
+    }
+
+    /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
+    return;
+}
 
 int
 connect_to_serv_port (char *servername,
@@ -630,6 +688,8 @@ connect_to_serv_port (char *servername,
     /* Display / Show the information we gathered */
     display_conn_info(conn);
 
+    /* Display / Show the information we gathered */
+    diagnose_conn_info(conn);
 
     int ssl_verify_result;
     ssl_verify_result = SSL_get_verify_result(conn->ssl);
