@@ -509,6 +509,7 @@ display_conn_info(struct sslconn *conn) {
     struct tm              result;
     char                   buf[27];
     const SSL_CIPHER      *c;
+    EVP_PKEY              *pktmp;
 
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
@@ -543,19 +544,27 @@ display_conn_info(struct sslconn *conn) {
         fprintf(stderr, ": Self-Signed peer? : %s\n", conn->certinfo->peer_uses_ca ? "Yes" : "No");
         fprintf(stderr, ": Peer Signed peer? : %s\n", conn->certinfo->peer_uses_ca ? "Yes" : "No");
 
-        depth = sk_X509_num(conn->certinfo->stack);
-        for (i = 0; i < depth; i++) {
-            tmp = X509_NAME_oneline(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-            fprintf(stderr, ": Subject DN        : %2d%*s %s\n", i, i + 2, "-|", tmp);
-            free(tmp);
+        if (conn->certinfo->cert) {
+            pktmp = X509_get_pubkey(conn->certinfo->cert);
+            fprintf(stderr, ": Public key bits   : %d\n", EVP_PKEY_bits(pktmp));
+            EVP_PKEY_free(pktmp);
+        }
 
-            tmp = X509_NAME_oneline(X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-            fprintf(stderr, ": Issuer DN         : %2d%*s %s\n", i, i + 2, "-|", tmp);
-            free(tmp);
+        if (conn->certinfo->stack) {
+            depth = sk_X509_num(conn->certinfo->stack);
+            for (i = 0; i < depth; i++) {
+                tmp = X509_NAME_oneline(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
+                fprintf(stderr, ": Subject DN        : %-2d%*s %s\n", i, i + 2, "-|", tmp);
+                free(tmp);
 
-            if (X509_NAME_cmp(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)),
-                              X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i))) == 0) {
-                conn->certinfo->found_ca = 1;
+                tmp = X509_NAME_oneline(X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
+                fprintf(stderr, ": Issuer DN         : %-2d%*s %s\n", i, i + 2, "-|", tmp);
+                free(tmp);
+
+                if (X509_NAME_cmp(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)),
+                                  X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i))) == 0) {
+                    conn->certinfo->found_ca = 1;
+                }
             }
         }
 
