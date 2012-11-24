@@ -1,0 +1,14 @@
+Interesting SSL test cases:
+
+
+TLS extension for Server Name Indication (SNI) test:
+./drssl --host www.evilcoder.nl --sni www.evilcoder.nl
+./drssl --host www.evilcoder.org --sni www.evilcoder.org
+
+OCSP Stapling with VA certificate:
+www.cloudflare.com
+
+Time services:
+www.nikhef.nl (on time, with OpenSSL)
+www.abnambro.nl (off time/random, with a load balancer, IIS or something else).
+
