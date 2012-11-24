@@ -33,4 +33,5 @@ Usage:
     --12 (use TLSv1.2)
     --cafile <path to CA (bundle) file>
     --capath <path to CA directory>
+    --sni <TLS SNI (Server Name Indication) hostname>
 

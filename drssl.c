@@ -158,9 +158,9 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     fprintf(stderr, "%s: - Re-Verify certificate at depth: %i, pre-OK is: %d\n",
                     logstr, errdepth, ok);
     X509_NAME_oneline(X509_get_issuer_name(curr_cert), issuer, 256);
-    fprintf(stderr, "%s:  issuer   = %s\n", logstr, issuer);
+    fprintf(stderr, "%s:   issuer   = %s\n", logstr, issuer);
     X509_NAME_oneline(X509_get_subject_name(curr_cert), subject, 256);
-    fprintf(stderr, "%s:  subject  = %s\n", logstr, subject);
+    fprintf(stderr, "%s:   subject  = %s\n", logstr, subject);
 
     if (ok != 1) {
         switch (errnum) {
