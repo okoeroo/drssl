@@ -28,25 +28,21 @@
 
 #define CIPHER_LIST "ALL"
 
-
-#ifdef THREADED
-
-#ifndef WIN32
-#include <pthread.h>
-#define THREAD_CC
-#define THREAD_TYPE                    pthread_t
-#define THREAD_CREATE(tid, entry, arg) pthread_create(&(tid), NULL, \
-                                                      (entry), (arg))
-#else
-#include <windows.h>
-#define THREAD_CC                      __cdecl
-#define THREAD_TYPE                    DWORD
-#define THREAD_CREATE(tid, entry, arg) do { _beginthread((entry), 0, (arg));\
-                                            (tid) = GetCurrentThreadId();   \
-                                       } while (0)
-#endif
-
-#endif //THREADED
+#define RESET_COLOR     "\e[m"
+#define MAKE_D_GRAY     "\e[30m"
+#define MAKE_RED        "\e[31m"
+#define MAKE_GREEN      "\e[32m"
+#define MAKE_YELLOW     "\e[33m"
+#define MAKE_BLUE       "\e[34m"
+#define MAKE_PURPLE     "\e[35m"
+#define MAKE_LIGHT_BLUE "\e[36m"
+#define MAKE_I_RED      "\e[41m"
+#define MAKE_I_GREEN    "\e[42m"
+#define MAKE_I_YELLOW   "\e[43m"
+#define MAKE_I_BLUE     "\e[44m"
+#define MAKE_I_PURPLE   "\e[45m"
+#define MAKE_I_L_BLUE   "\e[46m"
+#define MAKE_I_GREY     "\e[47m"
 
 /* Types */
 typedef enum san_type_e {
@@ -66,14 +62,28 @@ struct subjectaltname {
 
 struct certinfo {
     X509            *cert;
-    STACK_OF(X509)  *stack;
     char            *commonname;
-    unsigned short   peer_uses_selfsigned;
-    unsigned short   peer_has_ca_true;
-    unsigned short   found_ca_in_stack;
+    char            *subject_dn;
+    char            *issuer_dn;
+    unsigned int     bits;
+    unsigned int     at_depth;
+    unsigned short   selfsigned;
+    unsigned short   ca;
 
     TAILQ_HEAD(, subjectaltname) san_head;
+
+    TAILQ_ENTRY(certinfo) entries;
 };
+
+
+struct diagnostics {
+    unsigned short   has_peer;
+    unsigned short   has_stack;
+    unsigned short   peer_uses_selfsigned;
+    unsigned short   peer_has_ca_true;
+    unsigned short   found_root_ca_in_stack;
+};
+
 
 struct sslconn {
     SSL_CTX *ctx;
@@ -87,11 +97,67 @@ struct sslconn {
     char *host_ip;
     char *sni;
     unsigned short port;
-    unsigned short use_post_ssl_connection_checks;
-    struct certinfo *certinfo;
-};
-/* Types */
 
+    /* struct certinfo *certinfo; */
+    struct diagnostics *diagnostics;
+    TAILQ_HEAD(, certinfo) certinfo_head;
+};
+
+/* Prototypes */
+struct certinfo *create_certinfo(void);
+struct sslconn *create_sslconn(void);
+void global_ssl_init(void);
+int x509IsCA(X509 *cert);
+static int ocsp_resp_cb(SSL *s, void *arg);
+static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
+int setup_client_ctx(struct sslconn *conn, unsigned short type);
+int create_client_socket (int * client_socket, const char * server,
+                          int port, int time_out_milliseconds);
+int connect_bio_to_serv_port(struct sslconn *conn);
+int connect_ssl_over_socket(struct sslconn *conn);
+int extract_subjectaltnames(struct certinfo *certinfo);
+int extract_commonname(struct certinfo *certinfo);
+int extract_certinfo_details(struct certinfo *certinfo);
+int extract_peer_certinfo(struct sslconn *conn);
+static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent);
+int extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags);
+void display_certinfo(struct certinfo *certinfo);
+void display_conn_info(struct sslconn *conn);
+void diagnose_conn_info(struct sslconn *conn);
+int connect_to_serv_port (char *servername, unsigned short servport,
+                          unsigned short sslversion, char *cafile,
+                          char *capath, char *sni);
+void usage(void);
+
+/* Functions */
+struct certinfo *
+create_certinfo(void) {
+    struct certinfo *certinfo;
+    certinfo = calloc(sizeof(struct certinfo), 1);
+    if (!certinfo)
+        return NULL;
+
+    TAILQ_INIT(&(certinfo->san_head));
+    return certinfo;
+}
+
+struct sslconn *
+create_sslconn(void) {
+    struct sslconn *conn;
+
+    conn = calloc(sizeof(struct sslconn), 1);
+    if (!conn)
+        goto fail;
+
+    conn->diagnostics = calloc(sizeof(struct diagnostics), 1);
+    if (!conn->diagnostics)
+        goto fail;
+
+    TAILQ_INIT(&(conn->certinfo_head));
+    return conn;
+fail:
+    return NULL;
+}
 
 void
 global_ssl_init(void) {
@@ -145,7 +211,7 @@ ocsp_resp_cb(SSL *s, void *arg) {
 }
 
 /* Custom verification callback */
-int
+static int
 verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     unsigned long   errnum   = X509_STORE_CTX_get_error(store_ctx);
     int             errdepth = X509_STORE_CTX_get_error_depth(store_ctx);
@@ -328,8 +394,7 @@ create_client_socket (int * client_socket,
 /* Connect the struct sslconn object using a BIO */
 int
 connect_bio_to_serv_port(struct sslconn *conn) {
-    int rc, count, sock;
-    char *tmp;
+    int sock;
 
     fprintf(stderr, "%s\n", __func__);
 
@@ -390,7 +455,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
 
 /* <0: error, 0: No SAN found, 1: SAN found */
 int
-extract_subjectaltnames(struct sslconn *conn) {
+extract_subjectaltnames(struct certinfo *certinfo) {
     int i, j, extcount;
     unsigned short found_san = 0;
     X509_EXTENSION          *ext;
@@ -401,27 +466,27 @@ extract_subjectaltnames(struct sslconn *conn) {
     const unsigned char     *data;
     STACK_OF(CONF_VALUE)    *val;
     CONF_VALUE              *nval;
-    const X509V3_EXT_METHOD *meth;
+    X509V3_EXT_METHOD       *meth;
     void                    *ext_str = NULL;
     struct subjectaltname   *p_san;
 
     fprintf(stderr, "%s\n", __func__);
 
-    if (!conn || !conn->certinfo || !conn->certinfo->cert)
+    if (!certinfo || !certinfo->cert)
         return -1;
 
     /* Compare the subjectAltName DNS value with the host value */
-    if ((extcount = X509_get_ext_count(conn->certinfo->cert)) > 0) {
+    if ((extcount = X509_get_ext_count(certinfo->cert)) > 0) {
         /* Run through all the extensions */
         for (i = 0; i < extcount; i++) {
-            ext = X509_get_ext(conn->certinfo->cert, i);
+            ext = X509_get_ext(certinfo->cert, i);
             NID_from_ext = OBJ_obj2nid(X509_EXTENSION_get_object(ext));
 
             /* Subject Alt Name? */
             if (NID_from_ext == NID_subject_alt_name) {
                 found_san = 1;
 
-                meth = X509V3_EXT_get(ext);
+                meth = (X509V3_EXT_METHOD *)X509V3_EXT_get(ext);
                 if (!meth)
                     break;
 
@@ -467,8 +532,7 @@ extract_subjectaltnames(struct sslconn *conn) {
                         return -11;
                     }
 
-                    TAILQ_INSERT_TAIL(&(conn->certinfo->san_head),
-                                      p_san, entries);
+                    TAILQ_INSERT_TAIL(&(certinfo->san_head), p_san, entries);
                 }
             }
         }
@@ -481,17 +545,17 @@ extract_subjectaltnames(struct sslconn *conn) {
 }
 
 int
-extract_commonname(struct sslconn *conn) {
+extract_commonname(struct certinfo *certinfo) {
     X509_NAME *subj;
     int cnt;
     char *cn;
 
     fprintf(stderr, "%s\n", __func__);
 
-    if (!conn || !conn->certinfo || !conn->certinfo->cert)
+    if (!certinfo || !certinfo->cert)
         return -1;
 
-    subj = X509_get_subject_name(conn->certinfo->cert);
+    subj = X509_get_subject_name(certinfo->cert);
     if (!subj) {
         fprintf(stderr, "Error: could not extract the Subject DN\n");
         return -2;
@@ -505,61 +569,99 @@ extract_commonname(struct sslconn *conn) {
     }
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, cnt + 1);
 
-    conn->certinfo->commonname = cn;
+    certinfo->commonname = cn;
+    return 0;
+}
+
+int
+extract_certinfo_details(struct certinfo *certinfo) {
+    EVP_PKEY *pktmp;
+
+    if (!certinfo)
+        return -1;
+
+    /* List and register the SubjectAltNames */
+    if (extract_subjectaltnames(certinfo) < 0) {
+        return -2;
+    }
+
+    /* Extract and register the Common Name */
+    if (extract_commonname(certinfo) < 0) {
+        return -3;
+    }
+
+    /* Check if peer cert is a CA, or something */
+    certinfo->ca         = x509IsCA(certinfo->cert);
+    certinfo->selfsigned = (X509_NAME_cmp(X509_get_subject_name(certinfo->cert),
+                                          X509_get_issuer_name (certinfo->cert)) == 0);
+
+    pktmp = X509_get_pubkey(certinfo->cert);
+    certinfo->bits = EVP_PKEY_bits(pktmp);
+    EVP_PKEY_free(pktmp);
+
+    certinfo->subject_dn = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
+    certinfo->issuer_dn  = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
+
     return 0;
 }
 
 int
 extract_peer_certinfo(struct sslconn *conn) {
+    struct certinfo *certinfo, *tmp_certinfo;
     int depth, i;
+    X509 *peer;
+    STACK_OF(X509) *stack;
 
     if (!conn || !conn->ssl)
         return -1;
 
     fprintf(stderr, "%s\n", __func__);
 
-    conn->certinfo = calloc(sizeof(struct certinfo), 1);
-    if (!conn->certinfo) {
-        fprintf(stderr, "Error: Out of memory\n");
-        return -2;
-    }
-    TAILQ_INIT(&(conn->certinfo->san_head));
-
-    conn->certinfo->cert = SSL_get_peer_certificate(conn->ssl);
-    if (!conn->certinfo->cert) {
+    /* Record peer certificate */
+    peer = SSL_get_peer_certificate(conn->ssl);
+    if (!peer) {
         fprintf(stderr, "Error: No peer certificate found in SSL.\n");
-        return -3;
+        conn->diagnostics->has_peer = 0;
+        return -2;
+    } else {
+        conn->diagnostics->has_peer = 1;
+        certinfo = create_certinfo();
+        if (!certinfo) {
+            fprintf(stderr, "Error: Out of memory\n");
+            return -3;
+        }
+        certinfo->cert = peer;
+        certinfo->at_depth = 0;
+        TAILQ_INSERT_TAIL(&(conn->certinfo_head), certinfo, entries);
     }
+
+    /* Record stack of certificates */
 
     /* On the client side, the peer_cert is included. On the server side it is
      * not. Assume client side for now */
-    conn->certinfo->stack = SSL_get_peer_cert_chain(conn->ssl);
-    if (!conn->certinfo->stack) {
+    stack = SSL_get_peer_cert_chain(conn->ssl);
+    if (!stack) {
         fprintf(stderr, "Error: No peer certificate stack found in SSL\n");
-        return -4;
-    }
+        conn->diagnostics->has_stack = 0;
+    } else {
+        conn->diagnostics->has_stack = 1;
+        depth = sk_X509_num(stack);
+        for (i = 0; i < depth; i++) {
+            certinfo = create_certinfo();
+            if (!certinfo) {
+                fprintf(stderr, "Error: Out of memory\n");
+                return -5;
+            }
+            certinfo->at_depth = i;
+            certinfo->cert = sk_X509_value(stack, i);
 
-    /* List and register the SubjectAltNames */
-    if (extract_subjectaltnames(conn) < 0) {
-        return -5;
-    }
+            TAILQ_INSERT_TAIL(&(conn->certinfo_head), certinfo, entries);
+        }
 
-    /* Extract and register the Common Name */
-    if (extract_commonname(conn) < 0) {
-        return -6;
-    }
-
-    /* Check if peer cert is a CA, or something */
-    conn->certinfo->peer_uses_selfsigned = (X509_NAME_cmp(X509_get_subject_name(conn->certinfo->cert),
-                                                          X509_get_issuer_name (conn->certinfo->cert)) == 0);
-    conn->certinfo->peer_has_ca_true     = x509IsCA(conn->certinfo->cert);
-
-    /* Got Root CA / self-signed CA from the service */
-    depth = sk_X509_num(conn->certinfo->stack);
-    for (i = 0; i < depth; i++) {
-        if (X509_NAME_cmp(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)),
-                          X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i))) == 0) {
-            conn->certinfo->found_ca_in_stack = 1;
+        /* Loop over found certinfo structs to extract certificate details per certificate */
+        for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+            extract_certinfo_details(certinfo);
+            tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
         }
     }
 
@@ -567,21 +669,168 @@ extract_peer_certinfo(struct sslconn *conn) {
     return 0;
 }
 
+static int
+ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent)
+        {
+    BIO_printf(bp, "%*sCertificate ID:\n", indent, "");
+    indent += 2;
+    BIO_printf(bp, "%*sHash Algorithm: ", indent, "");
+    i2a_ASN1_OBJECT(bp, a->hashAlgorithm->algorithm);
+    BIO_printf(bp, "\n%*sIssuer Name Hash: ", indent, "");
+    i2a_ASN1_STRING(bp, a->issuerNameHash, V_ASN1_OCTET_STRING);
+    BIO_printf(bp, "\n%*sIssuer Key Hash: ", indent, "");
+    i2a_ASN1_STRING(bp, a->issuerKeyHash, V_ASN1_OCTET_STRING);
+    BIO_printf(bp, "\n%*sSerial Number: ", indent, "");
+    i2a_ASN1_INTEGER(bp, a->serialNumber);
+    BIO_printf(bp, "\n");
+    return 1;
+    }
+
+int
+extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags) {
+    int i, ret = 0;
+    long l;
+    OCSP_CERTID *cid = NULL;
+    OCSP_BASICRESP *br = NULL;
+    OCSP_RESPID *rid = NULL;
+    OCSP_RESPDATA  *rd = NULL;
+    OCSP_CERTSTATUS *cst = NULL;
+    OCSP_REVOKEDINFO *rev = NULL;
+    OCSP_SINGLERESP *single = NULL;
+    OCSP_RESPBYTES *rb = o->responseBytes;
+
+    l=ASN1_ENUMERATED_get(o->responseStatus);
+    if (BIO_printf(bp,"    OCSP Response Status: %s (0x%lx)\n", OCSP_response_status_str(l), l) <= 0) goto err;
+
+    if (rb == NULL) return 1;
+    if (BIO_puts(bp,"    Response Type: ") <= 0)
+        goto err;
+    if(i2a_ASN1_OBJECT(bp, rb->responseType) <= 0)
+        goto err;
+    if (OBJ_obj2nid(rb->responseType) != NID_id_pkix_OCSP_basic) {
+        BIO_puts(bp," (unknown response type)\n");
+        return 1;
+    }
+
+    i = ASN1_STRING_length(rb->response);
+    if (!(br = OCSP_response_get1_basic(o))) goto err;
+    rd = br->tbsResponseData;
+    l=ASN1_INTEGER_get(rd->version);
+    if (BIO_printf(bp,"\n    Version: %lu (0x%lx)\n",
+                l+1,l) <= 0) goto err;
+    if (BIO_puts(bp,"    Responder Id: ") <= 0) goto err;
+
+    rid =  rd->responderId;
+    switch (rid->type) {
+        case V_OCSP_RESPID_NAME:
+            X509_NAME_print_ex(bp, rid->value.byName, 0, XN_FLAG_ONELINE);
+            break;
+        case V_OCSP_RESPID_KEY:
+            i2a_ASN1_STRING(bp, rid->value.byKey, V_ASN1_OCTET_STRING);
+            break;
+    }
+
+    if (BIO_printf(bp,"\n    Produced At: ")<=0) goto err;
+    if (!ASN1_GENERALIZEDTIME_print(bp, rd->producedAt)) goto err;
+    if (BIO_printf(bp,"\n    Responses:\n") <= 0) goto err;
+    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
+        if (! sk_OCSP_SINGLERESP_value(rd->responses, i)) continue;
+        single = sk_OCSP_SINGLERESP_value(rd->responses, i);
+        cid = single->certId;
+        if(ocsp_certid_print(bp, cid, 4) <= 0) goto err;
+        cst = single->certStatus;
+        if (BIO_printf(bp,"    Cert Status: %s",
+                    OCSP_cert_status_str(cst->type)) <= 0)
+            goto err;
+        if (cst->type == V_OCSP_CERTSTATUS_REVOKED) {
+            rev = cst->value.revoked;
+            if (BIO_printf(bp, "\n    Revocation Time: ") <= 0)
+                goto err;
+            if (!ASN1_GENERALIZEDTIME_print(bp,
+                        rev->revocationTime))
+                goto err;
+            if (rev->revocationReason) {
+                l=ASN1_ENUMERATED_get(rev->revocationReason);
+                if (BIO_printf(bp,
+                            "\n    Revocation Reason: %s (0x%lx)",
+                            OCSP_crl_reason_str(l), l) <= 0)
+                    goto err;
+            }
+        }
+        if (BIO_printf(bp,"\n    This Update: ") <= 0) goto err;
+        if (!ASN1_GENERALIZEDTIME_print(bp, single->thisUpdate))
+            goto err;
+        if (single->nextUpdate) {
+            if (BIO_printf(bp,"\n    Next Update: ") <= 0)goto err;
+            if (!ASN1_GENERALIZEDTIME_print(bp,single->nextUpdate))
+                goto err;
+        }
+        if (BIO_write(bp,"\n",1) <= 0) goto err;
+        if (!X509V3_extensions_print(bp,
+                    "Response Single Extensions",
+                    single->singleExtensions, flags, 8))
+            goto err;
+        if (BIO_write(bp,"\n",1) <= 0) goto err;
+    }
+    if (!X509V3_extensions_print(bp, "Response Extensions", rd->responseExtensions, flags, 4))
+        goto err;
+#if 0
+    if(X509_signature_print(bp, br->signatureAlgorithm, br->signature) <= 0)
+        goto err;
+#endif
+
+#if 0
+    for (i=0; i<sk_X509_num(br->certs); i++) {
+        X509_print(bp, sk_X509_value(br->certs,i));
+        PEM_write_bio_X509(bp,sk_X509_value(br->certs,i));
+    }
+#endif
+
+    ret = 1;
+err:
+    OCSP_BASICRESP_free(br);
+    return ret;
+}
+
+void
+display_certinfo(struct certinfo *certinfo) {
+    char *tmp;
+    struct subjectaltname *p_san, *tmp_p_san;
+
+    if (!certinfo || !certinfo->cert)
+        return;
+
+    tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
+    fprintf(stderr, ": Subject DN        : %s\n", tmp);
+    free(tmp);
+    tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
+    fprintf(stderr, ": Issuer DN         : %s\n", tmp);
+    free(tmp);
+
+    fprintf(stderr, ": Depth             : %u\n", certinfo->at_depth);
+    fprintf(stderr, ": Public key bits(p): %d\n", certinfo->bits);
+
+    for (p_san = TAILQ_FIRST(&(certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
+        fprintf(stderr, ": Subject Alt Name  : %s\n", p_san->value);
+        tmp_p_san = TAILQ_NEXT(p_san, entries);
+    }
+    fprintf(stderr, ": Common name       : %s\n", certinfo->commonname);
+
+    return;
+}
 
 void
 display_conn_info(struct sslconn *conn) {
-    struct subjectaltname *p_san, *tmp_p_san;
-    char                  *tmp;
-    int                    i, depth;
+    struct certinfo       *certinfo, *tmp_certinfo;
+    int                    i;
     uint32_t               random_time;
     time_t                 server_time_s;
     struct tm              result;
     char                   buf[27];
     const SSL_CIPHER      *c;
-    EVP_PKEY              *pktmp;
     const COMP_METHOD     *comp, *expansion;
 
-    fprintf(stderr, "=== Report ===\n");
+    fprintf(stderr, MAKE_LIGHT_BLUE "=== Report ===" RESET_COLOR "\n");
 
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
@@ -623,44 +872,17 @@ display_conn_info(struct sslconn *conn) {
     fprintf(stderr, ": random->unix_time : %lu, %s (utc/zulu)\n",
                     server_time_s, buf);
 
-    if (conn->certinfo) {
-        fprintf(stderr, ": Certificate?      : %s\n", conn->certinfo->cert ? "Yes" : "No");
-        fprintf(stderr, ": Stack?            : %s\n", conn->certinfo->stack ? "Yes" : "No");
-        fprintf(stderr, ": Root CA in stack? : %s\n", conn->certinfo->found_ca_in_stack ? "Yes" : "No");
-        fprintf(stderr, ": Self-Signed peer? : %s\n", conn->certinfo->peer_uses_selfsigned ? "Yes" : "No");
-        fprintf(stderr, ": Peer has CA:True  : %s\n", conn->certinfo->peer_has_ca_true ? "Yes" : "No");
+    fprintf(stderr, ": Certificate?      : %s\n", conn->diagnostics->has_peer ? "Yes" : "No");
+    fprintf(stderr, ": Stack?            : %s\n", conn->diagnostics->has_stack ? "Yes" : "No");
 
-        if (conn->certinfo->cert) {
-            pktmp = X509_get_pubkey(conn->certinfo->cert);
-            fprintf(stderr, ": Public key bits(p): %d\n", EVP_PKEY_bits(pktmp));
-            EVP_PKEY_free(pktmp);
+    /* Got certificate related information? */
+    if (!(TAILQ_EMPTY(&(conn->certinfo_head)))) {
+        for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+            fprintf(stderr, ": " MAKE_GREEN "---" RESET_COLOR "\n");
+            display_certinfo(certinfo);
+            tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
         }
-
-        if (conn->certinfo->stack) {
-            depth = sk_X509_num(conn->certinfo->stack);
-            for (i = 0; i < depth; i++) {
-                tmp = X509_NAME_oneline(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-                fprintf(stderr, ": Subject DN        : %-2d%*s %s\n",
-                                i, i + 2, "-|", tmp);
-                free(tmp);
-
-                tmp = X509_NAME_oneline(X509_get_issuer_name (sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-                fprintf(stderr, ": Issuer DN         : %-2d%*s %s\n",
-                                i, i + 2, "-|", tmp);
-                free(tmp);
-
-                pktmp = X509_get_pubkey(sk_X509_value(conn->certinfo->stack, i));
-                fprintf(stderr, ": Public key bits(s): %-2d%*s %d\n",
-                                i, i + 2, "-|", EVP_PKEY_bits(pktmp));
-                EVP_PKEY_free(pktmp);
-            }
-        }
-
-        for (p_san = TAILQ_FIRST(&(conn->certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
-            fprintf(stderr, ": Subject Alt Name  : %s\n", p_san->value);
-            tmp_p_san = TAILQ_NEXT(p_san, entries);
-        }
-        fprintf(stderr, ": Common name       : %s\n", conn->certinfo->commonname);
+        fprintf(stderr, ": " MAKE_GREEN "---" RESET_COLOR "\n");
 
         fprintf(stderr, ": OCSP Stapling     : %s\n", conn->ocsp_stapling ? "Yes" : "No");
         if (conn->ocsp_stapling) {
@@ -668,7 +890,8 @@ display_conn_info(struct sslconn *conn) {
             fprintf(stderr, ": OCSP Stapled Resp.:\n");
 
             bio_err = BIO_new_fp(stderr,BIO_NOCLOSE);
-            OCSP_RESPONSE_print(bio_err, conn->ocsp_stapling, 0);
+            /* OCSP_RESPONSE_print(bio_err, conn->ocsp_stapling, 0); */
+            extract_OCSP_RESPONSE_data(bio_err, conn->ocsp_stapling, 0);
             BIO_puts(bio_err, "\n");
         }
 
@@ -682,22 +905,20 @@ display_conn_info(struct sslconn *conn) {
 
 void
 diagnose_conn_info(struct sslconn *conn) {
+    struct certinfo       *certinfo, *tmp_certinfo;
+    struct certinfo       *peer_certinfo;
     struct subjectaltname *p_san, *tmp_p_san;
-    char                  *tmp;
-    int                    i, depth, bits;
-    uint32_t               random_time;
-    time_t                 server_time_s;
-    struct tm              result;
-    char                   buf[27];
-    const SSL_CIPHER      *c;
-    EVP_PKEY              *pktmp;
+    /* uint32_t               random_time; */
+    /* time_t                 server_time_s; */
+    /* struct tm              result; */
+    /* const SSL_CIPHER      *c; */
     unsigned short         found_san = 0;
     int                    ssl_verify_result;
 
     if (!conn)
         return;
 
-    fprintf(stderr, "=== Diagnoses ===\n");
+    fprintf(stderr, MAKE_LIGHT_BLUE "=== Diagnoses ===" RESET_COLOR "\n");
 
     ssl_verify_result = SSL_get_verify_result(conn->ssl);
     switch (ssl_verify_result) {
@@ -713,35 +934,63 @@ diagnose_conn_info(struct sslconn *conn) {
                             ssl_verify_result);
     }
 
-
     /* TODO: Time on server, random or a big deviation */
 
+    /* Got certificate related information? */
+    if (TAILQ_EMPTY(&(conn->certinfo_head))) {
+        fprintf(stderr, "Error: No peer certificate received\n");
+    } else {
+        for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+            /* Record the peer certificate */
+            if (certinfo->at_depth == 0) {
+                peer_certinfo = certinfo;
+
+                /* Peer certificate uses self-signed? */
+                if (certinfo->selfsigned) {
+                    conn->diagnostics->peer_uses_selfsigned = 1;
+                }
+                /* Peer certificate has CA:True flag */
+                if (certinfo->ca) {
+                    conn->diagnostics->peer_has_ca_true = 1;
+                }
+            } else {
+                /* Self-signed in the stack? */
+                if (certinfo->selfsigned) {
+                    conn->diagnostics->found_root_ca_in_stack = 1;
+                }
+            }
+            /* Next */
+            tmp_certinfo = TAILQ_NEXT(certinfo, entries);
+        }
+    }
+
+    /* Certificate stack diagnostics */
+    if (conn->diagnostics) {
+        /* Certificate stack details */
+        if (conn->diagnostics->found_root_ca_in_stack) {
+            fprintf(stderr, ": Warning: Server configuration error, a Root CA was "\
+                            "sent by the service. SSL stack must ignore this certificate.\n");
+        }
+        if (conn->diagnostics->peer_has_ca_true) {
+            fprintf(stderr, ": Error: The peer/host certificate has the CA:True setting in "\
+                            "the certificate, faking a CA. This is needs to be fixed.\n");
+        }
+        if (conn->diagnostics->peer_uses_selfsigned) {
+            fprintf(stderr, ": Error: The peer/host certificate uses a self-signed certificate. "\
+                            "Establishing trust is impossible\n");
+        }
+    }
 
     /* RFC2818 compliance, i.e. Got SAN?->Check SAN, leave CN. No SAN?
      * (seriously...)->Check CN.
      * Or bypass all and check something else known. (Not implemented yet) */
-    if (conn->certinfo) {
-        /* Certificate stack details */
-        if (conn->certinfo->found_ca_in_stack) {
-            fprintf(stderr, ": Warning: Server configuration error, a Root CA was "\
-                            "sent by the service. SSL stack must ignore this certificate.\n");
-        }
-        if (conn->certinfo->peer_has_ca_true) {
-            fprintf(stderr, ": Error: The peer/host certificate has the CA:True setting in "\
-                            "the certificate, faking a CA. This is needs to be fixed.\n");
-        }
-        if (conn->certinfo->peer_uses_selfsigned) {
-            fprintf(stderr, ": Error: The peer/host certificate uses a self-signed certificate. "\
-                            "Establishing trust is impossible\n");
-        }
-
-        /* Subject Alt Name matching based on RFC2818 */
-        if (TAILQ_EMPTY(&(conn->certinfo->san_head))) {
+    if (peer_certinfo) {
+        if (TAILQ_EMPTY(&(peer_certinfo->san_head))) {
             fprintf(stderr, ": RFC2818 Warning: Peer certificate is a legacy "\
                             "certificate as it features no Subject Alt Names\n");
 
             /* Check Common Name */
-            if (!strcasecmp(conn->certinfo->commonname, conn->host_ip)) {
+            if (!strcasecmp(peer_certinfo->commonname, conn->host_ip)) {
                 fprintf(stderr, ": RFC2818 : ok, legacy peer certificate "\
                                 "matched most significant Common Name.\n");
             } else {
@@ -752,7 +1001,7 @@ diagnose_conn_info(struct sslconn *conn) {
             }
         } else {
             /* Check SAN */
-            for (p_san = TAILQ_FIRST(&(conn->certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
+            for (p_san = TAILQ_FIRST(&(peer_certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
                 if (!strcasecmp(p_san->value, conn->host_ip)) {
                     fprintf(stderr, ": RFC2818 : ok, peer certificate matched "\
                                     "Subject Alt Name\n");
@@ -767,56 +1016,39 @@ diagnose_conn_info(struct sslconn *conn) {
                                 "Untrusted connection.\n");
             }
         }
-
-        /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
-        if (conn->certinfo->cert) {
-            pktmp = X509_get_pubkey(conn->certinfo->cert);
-            bits = EVP_PKEY_bits(pktmp);
-            if (bits < 1024) {
-                fprintf(stderr, ": The peer certificate is a small and weak public key length of %d bits. "\
-                                "This is really really bad. This means the security of the certificate can "\
-                                "be easily broken with a fast enough computer. Advise: replace it NOW with a new "\
-                                "certificate of at least 1024 bits, preferable 2048 bits or more.", bits);
-            } else if (bits < 1400) {
-                fprintf(stderr, ": The peer certificate has a weak public key length of %d bits. "\
-                                "This means the security of the certificate can be broken with a fast "\
-                                "enough computer. Advise: replace it with a higher quality certificate of at "\
-                                "least 2048 bits.\n", bits);
-            } else if (bits >= 1400) {
-                fprintf(stderr, ": The peer certificate is a has a strong public key length of %d bits. "\
-                                "This means the security of the certificate is ok\n", bits);
-            }
-            EVP_PKEY_free(pktmp);
-        }
-
-        /* Checking intermediate CAs, if any */
-        if (conn->certinfo->stack) {
-            depth = sk_X509_num(conn->certinfo->stack);
-            for (i = 0; i < depth; i++) {
-                pktmp = X509_get_pubkey(sk_X509_value(conn->certinfo->stack, i));
-                bits = EVP_PKEY_bits(pktmp);
-                EVP_PKEY_free(pktmp);
-
-                tmp = X509_NAME_oneline(X509_get_subject_name(sk_X509_value(conn->certinfo->stack, i)), NULL, 0);
-                if (bits < 1024) {
-                    fprintf(stderr, ": The certificate with Subject DN \"%s\" is a small and weak public key length of \'%d\' bits. "\
-                                    "This is really really bad. This means the security of the certificate can "\
-                                    "be easily broken with a fast enough computer. Advise: replace it NOW with a new "\
-                                    "certificate of at least 1024 bits, preferable 2048 bits or more.", tmp, bits);
-                } else if (bits < 1400) {
-                    fprintf(stderr, ": The certificate with Subject DN \"%s\" has a weak public key length of \'%d\' bits. "\
-                                    "This means the security of the certificate can be broken with a fast "\
-                                    "enough computer. Advise: replace it with a higher quality certificate of at "\
-                                    "least 2048 bits.\n", tmp, bits);
-                } else if (bits >= 1400) {
-                    fprintf(stderr, ": The certificate with Subject DN \"%s\" has a strong public key length of \'%d\' bits. "\
-                                    "This means the security of the certificate is ok\n", tmp, bits);
-                }
-                free(tmp);
-            }
-        }
     }
 
+    /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
+    if (TAILQ_EMPTY(&(conn->certinfo_head))) {
+        fprintf(stderr, "Error: No peer certificate received\n");
+    } else {
+        for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+            if (certinfo->bits < 1024) {
+                fprintf(stderr, ": The certificate with Subject DN \"%s\" is a small and weak "\
+                                "public key length of \'%d\' bits. This is really really bad. "\
+                                "This means the security of the certificate can be easily "\
+                                "broken with a fast enough computer. Advise: replace it NOW "\
+                                "with a new certificate of at least 1024 bits, preferable "\
+                                "2048 bits or more.\n",
+                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>", certinfo->bits);
+            } else if (certinfo->bits < 1400) {
+                fprintf(stderr, ": The certificate with Subject DN \"%s\" has a weak public "\
+                                "key length of \'%d\' bits. This means the security of the "\
+                                "certificate can be broken with a fast enough computer. "\
+                                "Advise: replace it with a higher quality certificate of at "\
+                                "least 2048 bits.\n",
+                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>", certinfo->bits);
+            } else if (certinfo->bits >= 1400) {
+                fprintf(stderr, ": The certificate with Subject DN \"%s\" has a strong public "\
+                                "key length of \'%d\' bits. This means the security of the "\
+                                "certificate is ok.\n",
+                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>", certinfo->bits);
+            }
+
+            /* Next */
+            tmp_certinfo = TAILQ_NEXT(certinfo, entries);
+        }
+    }
 
     /* OCSP check, stapled, non-stapled (could use libcurl here) */
 
@@ -841,7 +1073,8 @@ connect_to_serv_port (char *servername,
         return -1;
     }
 
-    conn = calloc(sizeof(struct sslconn), 1);
+    /* conn = calloc(sizeof(struct sslconn), 1); */
+    conn = create_sslconn();
     if (conn == NULL)
         return -1;
 
@@ -882,13 +1115,10 @@ connect_to_serv_port (char *servername,
     SSL_shutdown(conn->ssl);
     fprintf(stderr, "SSL Connection closed\n");
 
-    return 0;
-
-fail:
     SSL_clear(conn->ssl);
     SSL_free(conn->ssl);
     SSL_CTX_free(conn->ctx);
-    return 1;
+    return 0;
 }
 
 
