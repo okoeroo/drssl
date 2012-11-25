@@ -8,6 +8,10 @@
 Diagnose your SSL
 -----------------
 
+Description:
+Testing SSL setups to a host and analyses the server's SSL/TLS handshake and
+certificate information.
+
 
 Author:
 Oscar Koeroo <okoeroo@gmail.com>
@@ -35,3 +39,11 @@ Usage:
     --capath <path to CA directory>
     --sni <TLS SNI (Server Name Indication) hostname>
 
+
+Supports:
+- TLS SNI (Server Name Indication)
+- OCSP Stapling
+
+
+See BUGS file for known bugs and current limitations
+Feedback is welcome via GitHub.
