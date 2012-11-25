@@ -1,5 +1,11 @@
 Known Bugs
 ----------
+- SSLv2 setting still connects to SSLv3.
+- Peer certificate is added twice
 
-SSLv2 setting still connects to SSLv3.
-Wildcard Subject Alt Names or commonname matching
+
+Limitations
+-----------
+- Wildcard Subject Alt Names or commonname matching
+- OCSP & CRL checks to be added
+

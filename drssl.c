@@ -44,6 +44,11 @@
 #define MAKE_I_L_BLUE   "\e[46m"
 #define MAKE_I_GREY     "\e[47m"
 
+#define MSG_OK      ": " MAKE_GREEN  "ok                " RESET_COLOR ":"
+#define MSG_WARNING ": " MAKE_YELLOW "warning           " RESET_COLOR ":"
+#define MSG_ERROR   ": " MAKE_RED    "error             " RESET_COLOR ":"
+
+
 /* Types */
 typedef enum san_type_e {
     NONE,
@@ -924,13 +929,14 @@ diagnose_conn_info(struct sslconn *conn) {
     switch (ssl_verify_result) {
         case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
         case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-            fprintf(stderr, ": SSL certificate is self signed\n");
+            fprintf(stderr, "%s SSL certificate is self signed\n", MSG_ERROR);
             break;
         case X509_V_OK:
-            fprintf(stderr, ": SSL certificate verification passed\n");
+            fprintf(stderr, "%s SSL certificate verification passed\n", MSG_OK);
             break;
         default:
-            fprintf(stderr, ": SSL certification verification error: %d\n",
+            fprintf(stderr, "%s SSL certification verification error: %d\n",
+                            MSG_ERROR,
                             ssl_verify_result);
     }
 
@@ -968,16 +974,19 @@ diagnose_conn_info(struct sslconn *conn) {
     if (conn->diagnostics) {
         /* Certificate stack details */
         if (conn->diagnostics->found_root_ca_in_stack) {
-            fprintf(stderr, ": Warning: Server configuration error, a Root CA was "\
-                            "sent by the service. SSL stack must ignore this certificate.\n");
+            fprintf(stderr, "%s Server configuration error, a Root CA was "\
+                            "sent by the service. SSL stack must ignore this certificate.\n",
+                            MSG_WARNING);
         }
         if (conn->diagnostics->peer_has_ca_true) {
-            fprintf(stderr, ": Error: The peer/host certificate has the CA:True setting in "\
-                            "the certificate, faking a CA. This is needs to be fixed.\n");
+            fprintf(stderr, "%s The peer/host certificate has the CA:True setting in "\
+                            "the certificate. This makes no sense.\n",
+                            MSG_ERROR);
         }
         if (conn->diagnostics->peer_uses_selfsigned) {
-            fprintf(stderr, ": Error: The peer/host certificate uses a self-signed certificate. "\
-                            "Establishing trust is impossible\n");
+            fprintf(stderr, "%s The peer/host certificate uses a self-signed certificate. "\
+                            "Establishing trust is impossible\n",
+                            MSG_ERROR);
         }
     }
 
@@ -986,63 +995,73 @@ diagnose_conn_info(struct sslconn *conn) {
      * Or bypass all and check something else known. (Not implemented yet) */
     if (peer_certinfo) {
         if (TAILQ_EMPTY(&(peer_certinfo->san_head))) {
-            fprintf(stderr, ": RFC2818 Warning: Peer certificate is a legacy "\
-                            "certificate as it features no Subject Alt Names\n");
+            fprintf(stderr, "%s RFC2818 check: Peer certificate is a legacy "\
+                            "certificate as it features no Subject Alt Names\n",
+                            MSG_WARNING);
 
             /* Check Common Name */
             if (!strcasecmp(peer_certinfo->commonname, conn->host_ip)) {
-                fprintf(stderr, ": RFC2818 : ok, legacy peer certificate "\
-                                "matched most significant Common Name.\n");
+                fprintf(stderr, "%s RFC2818 check: legacy peer certificate "\
+                                "matched most significant Common Name.\n",
+                                MSG_OK);
             } else {
-                fprintf(stderr, ": RFC2818 Failure: legacy peer certificate's "\
+                fprintf(stderr, "%s RFC2818 check failed: legacy peer certificate's "\
                                 "most significant Common Name did not match the "\
                                 "Hostname or IP address of the server. Untrusted "\
-                                "connection.\n");
+                                "connection.\n",
+                                MSG_ERROR);
             }
         } else {
             /* Check SAN */
             for (p_san = TAILQ_FIRST(&(peer_certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
                 if (!strcasecmp(p_san->value, conn->host_ip)) {
-                    fprintf(stderr, ": RFC2818 : ok, peer certificate matched "\
-                                    "Subject Alt Name\n");
+                    fprintf(stderr, "%s RFC2818 check: peer certificate matched "\
+                                    "Subject Alt Name\n",
+                                    MSG_OK);
                     found_san = 1;
                 }
                 tmp_p_san = TAILQ_NEXT(p_san, entries);
             }
             if (!found_san) {
-                fprintf(stderr, ": RFC2818 Failure: Peer certificate has "\
+                fprintf(stderr, "%s RFC2818 check failed: Peer certificate has "\
                                 "Subject Alt Names, but none match the "\
                                 "Hostname or IP address of the server. "\
-                                "Untrusted connection.\n");
+                                "Untrusted connection.\n",
+                                MSG_ERROR);
             }
         }
     }
 
     /* Lower then 1024 is low-bit count aka failure, 1024 is a warning */
     if (TAILQ_EMPTY(&(conn->certinfo_head))) {
-        fprintf(stderr, "Error: No peer certificate received\n");
+        fprintf(stderr, "%s No peer certificate received\n", MSG_ERROR);
     } else {
         for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
             if (certinfo->bits < 1024) {
-                fprintf(stderr, ": The certificate with Subject DN \"%s\" is a small and weak "\
+                fprintf(stderr, "%s The certificate with Subject DN \"%s\" is a small and weak "\
                                 "public key length of \'%d\' bits. This is really really bad. "\
                                 "This means the security of the certificate can be easily "\
                                 "broken with a fast enough computer. Advise: replace it NOW "\
                                 "with a new certificate of at least 1024 bits, preferable "\
                                 "2048 bits or more.\n",
-                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>", certinfo->bits);
+                                MSG_ERROR,
+                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>",
+                                certinfo->bits);
             } else if (certinfo->bits < 1400) {
-                fprintf(stderr, ": The certificate with Subject DN \"%s\" has a weak public "\
+                fprintf(stderr, "%s The certificate with Subject DN \"%s\" has a weak public "\
                                 "key length of \'%d\' bits. This means the security of the "\
                                 "certificate can be broken with a fast enough computer. "\
                                 "Advise: replace it with a higher quality certificate of at "\
                                 "least 2048 bits.\n",
-                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>", certinfo->bits);
+                                MSG_WARNING,
+                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>",
+                                certinfo->bits);
             } else if (certinfo->bits >= 1400) {
-                fprintf(stderr, ": The certificate with Subject DN \"%s\" has a strong public "\
-                                "key length of \'%d\' bits. This means the security of the "\
-                                "certificate is ok.\n",
-                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>", certinfo->bits);
+                fprintf(stderr, "%s The certificate with Subject DN \"%s\" has a strong public "\
+                                "key length of \'%d\' bits.\n",
+                                MSG_OK,
+                                certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>",
+                                certinfo->bits);
             }
 
             /* Next */
