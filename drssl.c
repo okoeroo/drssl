@@ -133,6 +133,8 @@ int connect_to_serv_port (char *servername, unsigned short servport,
                           unsigned short sslversion, char *cafile,
                           char *capath, char *sni);
 void usage(void);
+unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
+unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
 
 /* Functions */
 struct certinfo *
@@ -610,6 +612,28 @@ extract_certinfo_details(struct certinfo *certinfo) {
     return 0;
 }
 
+unsigned short
+compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert) {
+    return !X509_NAME_cmp(X509_get_subject_name(certinfo->cert), X509_get_subject_name(cert)) &&
+           !X509_issuer_and_serial_cmp(certinfo->cert, cert);
+}
+
+unsigned short
+find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert) {
+    struct certinfo *certinfo, *tmp_certinfo;
+
+    if (!cert)
+        return 0;
+
+    for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+        if (compare_certinfo_to_X509(certinfo, cert)) {
+            return 1;
+        }
+        tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
+    }
+    return 0;
+}
+
 int
 extract_peer_certinfo(struct sslconn *conn) {
     struct certinfo *certinfo, *tmp_certinfo;
@@ -652,6 +676,13 @@ extract_peer_certinfo(struct sslconn *conn) {
         conn->diagnostics->has_stack = 1;
         depth = sk_X509_num(stack);
         for (i = 0; i < depth; i++) {
+            /* De-dup */
+            if (find_X509_in_certinfo_tail(conn, sk_X509_value(stack, i))) {
+                fprintf(stderr, "Discard certificate alrady captured\n");
+                continue;
+            }
+
+
             certinfo = create_certinfo();
             if (!certinfo) {
                 fprintf(stderr, "Error: Out of memory\n");
