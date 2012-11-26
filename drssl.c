@@ -882,6 +882,13 @@ display_conn_info(struct sslconn *conn) {
 
     fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
     fprintf(stderr, ": Port              : %d\n", conn->port);
+    fprintf(stderr, ": IP version        : %s\n", conn->ipversion == PF_UNSPEC ?
+                                                      "Unspecified, up to system defaults" :
+                                                      conn->ipversion == AF_INET6 ?
+                                                        "IPv6" :
+                                                        conn->ipversion == AF_INET ?
+                                                            "IPv4" :
+                                                            MAKE_I_RED "Unknown" RESET_COLOR);
     fprintf(stderr, ": TLS ext SNI       : %s\n", conn->sni ? conn->sni : "not set");
     fprintf(stderr, ": Socket number     : %d\n", conn->sock);
     switch (conn->sslversion) {
@@ -956,7 +963,13 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
     OCSP_CERTSTATUS *cst = NULL;
     OCSP_REVOKEDINFO *rev = NULL;
     OCSP_SINGLERESP *single = NULL;
-    OCSP_RESPBYTES *rb = ocsp->responseBytes;
+    OCSP_RESPBYTES *rb = NULL;
+
+    if (!ocsp)
+        return;
+
+    /* init */
+    rb = ocsp->responseBytes;
 
     fprintf(stderr, MAKE_LIGHT_BLUE "=== Diagnose OCSP ===" RESET_COLOR "\n");
     fprintf(stderr, "%s OCSP Source %s\n", MSG_BLANK, stapled ? "OCSP Stapling" : "AIA record on certificate");
@@ -1245,13 +1258,13 @@ diagnose_conn_info(struct sslconn *conn) {
 }
 
 int
-connect_to_serv_port (char *servername,
-                      unsigned short servport,
-                      int ipversion,
-                      unsigned short sslversion,
-                      char *cafile,
-                      char *capath,
-                      char *sni) {
+connect_to_serv_port(char *servername,
+                     unsigned short servport,
+                     int ipversion,
+                     unsigned short sslversion,
+                     char *cafile,
+                     char *capath,
+                     char *sni) {
     struct sslconn *conn;
 
     fprintf(stderr, "%s\n", __func__);
