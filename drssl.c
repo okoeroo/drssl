@@ -47,6 +47,7 @@
 #define MSG_OK      ": " MAKE_GREEN  "ok                " RESET_COLOR ":"
 #define MSG_WARNING ": " MAKE_YELLOW "warning           " RESET_COLOR ":"
 #define MSG_ERROR   ": " MAKE_RED    "error             " RESET_COLOR ":"
+#define MSG_BLANK   ":                   :"
 
 
 /* Types */
@@ -95,13 +96,14 @@ struct sslconn {
     BIO *bio;
     int sock;
     SSL *ssl;
-    OCSP_RESPONSE   *ocsp_stapling;
+    OCSP_RESPONSE *ocsp_stapling;
     char *cafile;
     char *capath;
     unsigned short sslversion;
     char *host_ip;
     char *sni;
     unsigned short port;
+    int ipversion;
 
     /* struct certinfo *certinfo; */
     struct diagnostics *diagnostics;
@@ -117,7 +119,8 @@ static int ocsp_resp_cb(SSL *s, void *arg);
 static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
 int setup_client_ctx(struct sslconn *conn, unsigned short type);
 int create_client_socket (int * client_socket, const char * server,
-                          int port, int time_out_milliseconds);
+                          int port, int ipversion,
+                          int time_out_milliseconds);
 int connect_bio_to_serv_port(struct sslconn *conn);
 int connect_ssl_over_socket(struct sslconn *conn);
 int extract_subjectaltnames(struct certinfo *certinfo);
@@ -125,16 +128,19 @@ int extract_commonname(struct certinfo *certinfo);
 int extract_certinfo_details(struct certinfo *certinfo);
 int extract_peer_certinfo(struct sslconn *conn);
 static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent);
-int extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags);
+int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
 void display_certinfo(struct certinfo *certinfo);
 void display_conn_info(struct sslconn *conn);
 void diagnose_conn_info(struct sslconn *conn);
 int connect_to_serv_port (char *servername, unsigned short servport,
+                          int ipversion,
                           unsigned short sslversion, char *cafile,
                           char *capath, char *sni);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
+void diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp,
+                   X509 *origincert, unsigned short stapled);
 
 /* Functions */
 struct certinfo *
@@ -325,6 +331,7 @@ int
 create_client_socket (int * client_socket,
                       const char * server,
                       int port,
+                      int ipversion,
                       int time_out_milliseconds) {
     struct addrinfo  hints;
     struct addrinfo *res;
@@ -340,7 +347,7 @@ create_client_socket (int * client_socket,
     memset(&hints, 0, sizeof(struct addrinfo));
 
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_family   = PF_UNSPEC;
+    hints.ai_family   = ipversion;
 
     /* Get addrinfo */
     snprintf(portstr, 24, "%d", port);
@@ -408,7 +415,7 @@ connect_bio_to_serv_port(struct sslconn *conn) {
     if (!conn || !conn->host_ip)
         return -1;
 
-    if (create_client_socket (&sock, conn->host_ip, conn->port, 30*1000) != 0) {
+    if (create_client_socket (&sock, conn->host_ip, conn->port, conn->ipversion, 30*1000) != 0) {
         fprintf(stderr, "Error: failed to connect to \"%s\" on port \'%d\'\n",
                         conn->host_ip, conn->port);
         return -2;
@@ -682,7 +689,6 @@ extract_peer_certinfo(struct sslconn *conn) {
                 continue;
             }
 
-
             certinfo = create_certinfo();
             if (!certinfo) {
                 fprintf(stderr, "Error: Out of memory\n");
@@ -723,7 +729,7 @@ ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent)
     }
 
 int
-extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags) {
+extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags) {
     int i, ret = 0;
     long l;
     OCSP_CERTID *cid = NULL;
@@ -734,6 +740,9 @@ extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags) {
     OCSP_REVOKEDINFO *rev = NULL;
     OCSP_SINGLERESP *single = NULL;
     OCSP_RESPBYTES *rb = o->responseBytes;
+
+    BIO *bp;
+    bp = BIO_new_fp(stderr,BIO_NOCLOSE);
 
     l=ASN1_ENUMERATED_get(o->responseStatus);
     if (BIO_printf(bp,"    OCSP Response Status: %s (0x%lx)\n", OCSP_response_status_str(l), l) <= 0) goto err;
@@ -815,6 +824,7 @@ extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags) {
         goto err;
 #endif
 
+    BIO_printf(bp, "\nResponse contains %d certificates\n", sk_X509_num(br->certs));
 #if 0
     for (i=0; i<sk_X509_num(br->certs); i++) {
         X509_print(bp, sk_X509_value(br->certs,i));
@@ -823,8 +833,10 @@ extract_OCSP_RESPONSE_data(BIO *bp, OCSP_RESPONSE* o, unsigned long flags) {
 #endif
 
     ret = 1;
+    BIO_puts(bp, "\n");
 err:
     OCSP_BASICRESP_free(br);
+    BIO_puts(bp, "\n");
     return ret;
 }
 
@@ -922,13 +934,8 @@ display_conn_info(struct sslconn *conn) {
 
         fprintf(stderr, ": OCSP Stapling     : %s\n", conn->ocsp_stapling ? "Yes" : "No");
         if (conn->ocsp_stapling) {
-            BIO *bio_err;
             fprintf(stderr, ": OCSP Stapled Resp.:\n");
-
-            bio_err = BIO_new_fp(stderr,BIO_NOCLOSE);
-            /* OCSP_RESPONSE_print(bio_err, conn->ocsp_stapling, 0); */
-            extract_OCSP_RESPONSE_data(bio_err, conn->ocsp_stapling, 0);
-            BIO_puts(bio_err, "\n");
+            extract_OCSP_RESPONSE_data(conn->ocsp_stapling, 0);
         }
 
     } else {
@@ -938,6 +945,135 @@ display_conn_info(struct sslconn *conn) {
     return;
 }
 
+void
+diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsigned short stapled) {
+    int i, ret = 0, flags = 0;
+    long l;
+    OCSP_CERTID *cid = NULL;
+    OCSP_BASICRESP *br = NULL;
+    OCSP_RESPID *rid = NULL;
+    OCSP_RESPDATA  *rd = NULL;
+    OCSP_CERTSTATUS *cst = NULL;
+    OCSP_REVOKEDINFO *rev = NULL;
+    OCSP_SINGLERESP *single = NULL;
+    OCSP_RESPBYTES *rb = ocsp->responseBytes;
+
+    fprintf(stderr, MAKE_LIGHT_BLUE "=== Diagnose OCSP ===" RESET_COLOR "\n");
+    fprintf(stderr, "%s OCSP Source %s\n", MSG_BLANK, stapled ? "OCSP Stapling" : "AIA record on certificate");
+
+    /* OCSP Response status */
+    l = ASN1_ENUMERATED_get(ocsp->responseStatus);
+    if (l == OCSP_RESPONSE_STATUS_SUCCESSFUL) {
+        fprintf(stderr, "%s OCSP Response Status is successful (generic OCSP answer)\n", MSG_OK);
+    } else {
+        fprintf(stderr, "%s OCSP Response Status is %s\n", MSG_ERROR, OCSP_response_status_str(l));
+    }
+
+    /* Actual bytes */
+    if (!rb) {
+        fprintf(stderr, "%s OCSP Response data is malformed or non-existant.\n", MSG_ERROR);
+        return;
+    }
+
+    /* Debug hack */
+    return;
+
+
+    BIO *bp;
+    bp = BIO_new_fp(stderr,BIO_NOCLOSE);
+
+
+    if (BIO_puts(bp,"    Response Type: ") <= 0)
+        goto err;
+    if(i2a_ASN1_OBJECT(bp, rb->responseType) <= 0)
+        goto err;
+    if (OBJ_obj2nid(rb->responseType) != NID_id_pkix_OCSP_basic) {
+        BIO_puts(bp," (unknown response type)\n");
+        return;
+    }
+
+    i = ASN1_STRING_length(rb->response);
+    if (!(br = OCSP_response_get1_basic(ocsp))) goto err;
+    rd = br->tbsResponseData;
+    l=ASN1_INTEGER_get(rd->version);
+    if (BIO_printf(bp,"\n    Version: %lu (0x%lx)\n",
+                l+1,l) <= 0) goto err;
+    if (BIO_puts(bp,"    Responder Id: ") <= 0) goto err;
+
+    rid =  rd->responderId;
+    switch (rid->type) {
+        case V_OCSP_RESPID_NAME:
+            X509_NAME_print_ex(bp, rid->value.byName, 0, XN_FLAG_ONELINE);
+            break;
+        case V_OCSP_RESPID_KEY:
+            i2a_ASN1_STRING(bp, rid->value.byKey, V_ASN1_OCTET_STRING);
+            break;
+    }
+
+    if (BIO_printf(bp,"\n    Produced At: ")<=0) goto err;
+    if (!ASN1_GENERALIZEDTIME_print(bp, rd->producedAt)) goto err;
+    if (BIO_printf(bp,"\n    Responses:\n") <= 0) goto err;
+    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
+        if (! sk_OCSP_SINGLERESP_value(rd->responses, i)) continue;
+        single = sk_OCSP_SINGLERESP_value(rd->responses, i);
+        cid = single->certId;
+        if(ocsp_certid_print(bp, cid, 4) <= 0) goto err;
+        cst = single->certStatus;
+        if (BIO_printf(bp,"    Cert Status: %s",
+                    OCSP_cert_status_str(cst->type)) <= 0)
+            goto err;
+        if (cst->type == V_OCSP_CERTSTATUS_REVOKED) {
+            rev = cst->value.revoked;
+            if (BIO_printf(bp, "\n    Revocation Time: ") <= 0)
+                goto err;
+            if (!ASN1_GENERALIZEDTIME_print(bp,
+                        rev->revocationTime))
+                goto err;
+            if (rev->revocationReason) {
+                l=ASN1_ENUMERATED_get(rev->revocationReason);
+                if (BIO_printf(bp,
+                            "\n    Revocation Reason: %s (0x%lx)",
+                            OCSP_crl_reason_str(l), l) <= 0)
+                    goto err;
+            }
+        }
+        if (BIO_printf(bp,"\n    This Update: ") <= 0) goto err;
+        if (!ASN1_GENERALIZEDTIME_print(bp, single->thisUpdate))
+            goto err;
+        if (single->nextUpdate) {
+            if (BIO_printf(bp,"\n    Next Update: ") <= 0)goto err;
+            if (!ASN1_GENERALIZEDTIME_print(bp,single->nextUpdate))
+                goto err;
+        }
+        if (BIO_write(bp,"\n",1) <= 0) goto err;
+        if (!X509V3_extensions_print(bp,
+                    "Response Single Extensions",
+                    single->singleExtensions, flags, 8))
+            goto err;
+        if (BIO_write(bp,"\n",1) <= 0) goto err;
+    }
+    if (!X509V3_extensions_print(bp, "Response Extensions", rd->responseExtensions, flags, 4))
+        goto err;
+#if 0
+    if(X509_signature_print(bp, br->signatureAlgorithm, br->signature) <= 0)
+        goto err;
+#endif
+
+    BIO_printf(bp, "\nResponse contains %d certificates\n", sk_X509_num(br->certs));
+#if 0
+    for (i=0; i<sk_X509_num(br->certs); i++) {
+        X509_print(bp, sk_X509_value(br->certs,i));
+        PEM_write_bio_X509(bp,sk_X509_value(br->certs,i));
+    }
+#endif
+
+    ret = 1;
+    BIO_puts(bp, "\n");
+err:
+    OCSP_BASICRESP_free(br);
+    BIO_puts(bp, "\n");
+    return;
+}
 
 void
 diagnose_conn_info(struct sslconn *conn) {
@@ -1101,6 +1237,7 @@ diagnose_conn_info(struct sslconn *conn) {
     }
 
     /* OCSP check, stapled, non-stapled (could use libcurl here) */
+    diagnose_ocsp(conn, conn->ocsp_stapling, NULL, 1);
 
 
     /* CRL check, (could use libcurl here) */
@@ -1110,6 +1247,7 @@ diagnose_conn_info(struct sslconn *conn) {
 int
 connect_to_serv_port (char *servername,
                       unsigned short servport,
+                      int ipversion,
                       unsigned short sslversion,
                       char *cafile,
                       char *capath,
@@ -1128,11 +1266,12 @@ connect_to_serv_port (char *servername,
     if (conn == NULL)
         return -1;
 
-    conn->host_ip = servername;
-    conn->port    = servport;
-    conn->cafile  = cafile;
-    conn->capath  = capath;
-    conn->sni     = sni;
+    conn->host_ip   = servername;
+    conn->port      = servport;
+    conn->ipversion = ipversion;
+    conn->cafile    = cafile;
+    conn->capath    = capath;
+    conn->sni       = sni;
 
     /* Create SSL context */
     if (setup_client_ctx(conn, sslversion) < 0) {
@@ -1174,10 +1313,14 @@ connect_to_serv_port (char *servername,
 
 void
 usage(void) {
+    printf("\n");
     printf("DrSSL - diagnose your SSL\n");
     printf("\t--help\n");
     printf("\t--host <host or IP>\n");
     printf("\t--port <port> - default is: 443\n");
+    printf("\t--4 (force IPv4 - default is system specific)\n");
+    printf("\t--6 (force IPv6 - default is system specific)\n");
+    printf("\n");
     printf("\t--2 (use SSLv2)\n");
     printf("\t--3 (use SSLv3)\n");
     printf("\t--10 (use TLSv1.0) - the default\n");
@@ -1195,6 +1338,7 @@ usage(void) {
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
     int sslversion = 10;
+    int ipversion = PF_UNSPEC; /* System preference is leading */
     char *servername = NULL;
     char *cafile = NULL;
     char *capath = NULL;
@@ -1204,6 +1348,8 @@ int main(int argc, char *argv[]) {
 
     static struct option long_options[] = /* options */
     {
+        {"4",           no_argument,       0, '4'},
+        {"6",           no_argument,       0, '6'},
         {"2",           no_argument,       0, '2'},
         {"3",           no_argument,       0, '3'},
         {"10",          no_argument,       0, 'A'},
@@ -1235,6 +1381,12 @@ int main(int argc, char *argv[]) {
                 break;
             case '3':
                 sslversion = 3;
+                break;
+            case '4':
+                ipversion = AF_INET;
+                break;
+            case '6':
+                ipversion = AF_INET6;
                 break;
             case 'A':
                 sslversion = 10;
@@ -1303,6 +1455,6 @@ int main(int argc, char *argv[]) {
     /* OpenSSL init */
     global_ssl_init();
 
-    return connect_to_serv_port(servername, port, sslversion, cafile, capath, sni);
+    return connect_to_serv_port(servername, port, ipversion, sslversion, cafile, capath, sni);
 }
 
