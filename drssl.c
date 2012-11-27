@@ -141,6 +141,10 @@ unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
 void diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp,
                    X509 *origincert, unsigned short stapled);
+time_t grid_asn1TimeToTimeT(unsigned char *asn1time, size_t len);
+time_t my_timegm(struct tm *tm);
+char *convert_time_t_to_utc_time_string(time_t t);
+
 
 /* Functions */
 struct certinfo *
@@ -193,6 +197,93 @@ x509IsCA(X509 *cert) {
    else return 0;
 }
 
+/**
+ * Note that timegm() is non-standard. Linux manpage advices the following
+ * substition instead.
+ */
+time_t
+my_timegm(struct tm *tm) {
+    time_t ret;
+    char *tz;
+
+    tz = getenv("TZ");
+    setenv("TZ", "", 1);
+    tzset();
+    ret = mktime(tm);
+    if (tz)
+        setenv("TZ", tz, 1);
+    else
+        unsetenv("TZ");
+    tzset();
+
+    return ret;
+}
+
+
+/* ASN1 time string (in a char *) to time_t */
+/**
+ *  (Use ASN1_STRING_data() to convert ASN1_GENERALIZEDTIME to char * if
+ *   necessary)
+ */
+time_t
+grid_asn1TimeToTimeT(unsigned char *asn1time, size_t len) {
+    char           zone;
+    struct tm      time_tm;
+    char           buf[5];
+    unsigned char *p;
+
+
+    if (len == 0) len = strlen((char *)asn1time);
+
+    if ((len != 13) && (len != 15)) {
+        return 0; /* dont understand */
+    }
+
+    memset(&time_tm, 0, sizeof(struct tm));
+
+    p = asn1time;
+    if (len == 15) {
+        memset(buf, 0, sizeof(buf)); memcpy(buf, p, 4); buf[4] = '\0'; time_tm.tm_year = atoi(buf); p = &p[4];
+    } else if (len == 13) {
+        memset(buf, 0, sizeof(buf)); memcpy(buf, p, 2); buf[2] = '\0'; time_tm.tm_year = atoi(buf); p = &p[2];
+    }
+    memset(buf, 0, sizeof(buf)); memcpy(buf, p, 2); buf[2] = '\0'; time_tm.tm_mon  = atoi(buf); p = &p[2];
+    memset(buf, 0, sizeof(buf)); memcpy(buf, p, 2); buf[2] = '\0'; time_tm.tm_mday = atoi(buf); p = &p[2];
+    memset(buf, 0, sizeof(buf)); memcpy(buf, p, 2); buf[2] = '\0'; time_tm.tm_hour = atoi(buf); p = &p[2];
+    memset(buf, 0, sizeof(buf)); memcpy(buf, p, 2); buf[2] = '\0'; time_tm.tm_min  = atoi(buf); p = &p[2];
+    memset(buf, 0, sizeof(buf)); memcpy(buf, p, 2); buf[2] = '\0'; time_tm.tm_sec  = atoi(buf); p = &p[2];
+    memset(buf, 0, sizeof(buf)); memcpy(buf, p, 1); buf[1] = '\0'; zone            = buf[0];    p = &p[1];
+    if (zone != 'Z')
+        return 0;
+
+    /* time format fixups */
+    if (time_tm.tm_year < 90) time_tm.tm_year += 100;
+    --(time_tm.tm_mon);
+
+    return my_timegm(&time_tm);
+}
+
+char *
+convert_time_t_to_utc_time_string(time_t t) {
+    int i;
+    char *buf;
+    struct tm time_tm;
+
+    buf = calloc(27, 1);
+    if (!buf) {
+        fprintf(stderr, "Error: Out of memory\n");
+        return NULL;
+    }
+
+    gmtime_r(&t, &time_tm);
+    asctime_r(&time_tm, buf);
+    for (i = 0; i < strlen(buf); i++) {
+        /* Remove newline */
+        if (buf[i] == '\n' || buf[i] == '\r') buf[i] = '\0';
+    }
+
+    return buf;
+}
 
 /* OCSP callback */
 static int
@@ -870,11 +961,9 @@ display_certinfo(struct certinfo *certinfo) {
 void
 display_conn_info(struct sslconn *conn) {
     struct certinfo       *certinfo, *tmp_certinfo;
-    int                    i;
     uint32_t               random_time;
     time_t                 server_time_s;
-    struct tm              result;
-    char                   buf[27];
+    char                  *buf;
     const SSL_CIPHER      *c;
     const COMP_METHOD     *comp, *expansion;
 
@@ -918,14 +1007,15 @@ display_conn_info(struct sslconn *conn) {
     /* Print the time from the random info */
     memcpy(&random_time, conn->ssl->s3->server_random, sizeof(uint32_t));
     server_time_s = ntohl(random_time);
-    gmtime_r(&server_time_s, &result);
-    asctime_r(&result, buf);
-    for (i = 0; i < strlen(buf); i++) {
-        /* Remove newline */
-        if (buf[i] == '\n' || buf[i] == '\r') buf[i] = '\0';
+
+    buf = convert_time_t_to_utc_time_string(server_time_s);
+    if (!buf) {
+        fprintf(stderr, "Error: Out of memory\n");
+        return;
     }
     fprintf(stderr, ": random->unix_time : %lu, %s (utc/zulu)\n",
                     server_time_s, buf);
+    free(buf);
 
     fprintf(stderr, ": Certificate?      : %s\n", conn->diagnostics->has_peer ? "Yes" : "No");
     fprintf(stderr, ": Stack?            : %s\n", conn->diagnostics->has_stack ? "Yes" : "No");
@@ -952,10 +1042,14 @@ display_conn_info(struct sslconn *conn) {
     return;
 }
 
+
 void
 diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsigned short stapled) {
     int i, ret = 0, flags = 0;
     long l;
+    char *tmp;
+    time_t producedAt = 0;
+    unsigned char *u_tmp;
     OCSP_CERTID *cid = NULL;
     OCSP_BASICRESP *br = NULL;
     OCSP_RESPID *rid = NULL;
@@ -988,40 +1082,81 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         return;
     }
 
-    /* Debug hack */
+    /* Only accept OCSP Basic response */
+    if (OBJ_obj2nid(rb->responseType) == NID_id_pkix_OCSP_basic) {
+        fprintf(stderr, "%s OCSP Response Type: Basic OCSP Response\n", MSG_OK);
+    } else {
+        fprintf(stderr, "%s OCSP Response Type: unknown response type\n", MSG_ERROR);
+        return;
+    }
+
+    /* Get OCSP Response Basic */
+    br = OCSP_response_get1_basic(ocsp);
+    if (!br) {
+        fprintf(stderr, "%s Malformed Response: Basic OCSP Response got not be retrieved\n", MSG_ERROR);
+        return;
+    }
+
+    /* Get Raw RespData */
+    rd = br->tbsResponseData;
+    if (!rd) {
+        fprintf(stderr, "%s Malformed Response: Raw Response data was not retrieved\n", MSG_ERROR);
+        return;
+    }
+
+    /* OCSP Response Version */
+    l = ASN1_INTEGER_get(rd->version);
+    if (l != 0) {
+        fprintf(stderr, "%s Unsupported OCSP Response version: %lu\n", MSG_ERROR, l + 1);
+        return;
+    }
+
+    /* Responder ID */
+    rid = rd->responderId;
+    if (!rid) {
+        fprintf(stderr, "%s Malformed Response: No Responder ID found\n", MSG_ERROR);
+        return;
+    }
+    switch (rid->type) {
+        case V_OCSP_RESPID_NAME:
+            tmp = X509_NAME_oneline(rid->value.byName, NULL, 0);
+            fprintf(stderr, "%s Responder ID (byName): \"%s\"\n", MSG_BLANK, tmp);
+            free(tmp);
+            break;
+        case V_OCSP_RESPID_KEY:
+            u_tmp = ASN1_STRING_data(rid->value.byKey);
+            fprintf(stderr, "%s Responder ID (byKey): \'%s\'\n", MSG_BLANK, u_tmp);
+            free(u_tmp);
+            break;
+    }
+
+    /* Check, and if so convert, the producedAt time */
+    if (rd->producedAt &&
+        (u_tmp = ASN1_STRING_data(rd->producedAt)) &&
+        u_tmp) {
+        producedAt = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
+        tmp = convert_time_t_to_utc_time_string(producedAt);
+        if (!tmp) {
+            fprintf(stderr, "Error: Out of memory\n");
+            return;
+        }
+        if (producedAt < (time(NULL) - (3600 * 24 * 14))) {
+            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 2 weeks ago on: %s UTC/Zulu\n", MSG_ERROR, convert_time_t_to_utc_time_string(producedAt));
+        } else if (producedAt < (time(NULL) - (3600 * 24 * 4))) {
+            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 4 days ago on: %s UTC/Zulu\n", MSG_WARNING, convert_time_t_to_utc_time_string(producedAt));
+        } else {
+            fprintf(stderr, "%s The OCSP Response indicates to be newer then 4 days on: %s UTC/Zulu\n", MSG_OK, convert_time_t_to_utc_time_string(producedAt));
+        }
+        free(tmp);
+    }
+
+
+    /* Debug cut off hack */
     return;
 
 
     BIO *bp;
     bp = BIO_new_fp(stderr,BIO_NOCLOSE);
-
-
-    if (BIO_puts(bp,"    Response Type: ") <= 0)
-        goto err;
-    if(i2a_ASN1_OBJECT(bp, rb->responseType) <= 0)
-        goto err;
-    if (OBJ_obj2nid(rb->responseType) != NID_id_pkix_OCSP_basic) {
-        BIO_puts(bp," (unknown response type)\n");
-        return;
-    }
-
-    i = ASN1_STRING_length(rb->response);
-    if (!(br = OCSP_response_get1_basic(ocsp))) goto err;
-    rd = br->tbsResponseData;
-    l=ASN1_INTEGER_get(rd->version);
-    if (BIO_printf(bp,"\n    Version: %lu (0x%lx)\n",
-                l+1,l) <= 0) goto err;
-    if (BIO_puts(bp,"    Responder Id: ") <= 0) goto err;
-
-    rid =  rd->responderId;
-    switch (rid->type) {
-        case V_OCSP_RESPID_NAME:
-            X509_NAME_print_ex(bp, rid->value.byName, 0, XN_FLAG_ONELINE);
-            break;
-        case V_OCSP_RESPID_KEY:
-            i2a_ASN1_STRING(bp, rid->value.byKey, V_ASN1_OCTET_STRING);
-            break;
-    }
 
     if (BIO_printf(bp,"\n    Produced At: ")<=0) goto err;
     if (!ASN1_GENERALIZEDTIME_print(bp, rd->producedAt)) goto err;
