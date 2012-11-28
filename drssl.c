@@ -1082,7 +1082,8 @@ ASN1_OBJECT_to_buffer(ASN1_OBJECT *a) {
 
 void
 diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsigned short stapled) {
-    int i, ret = 0, flags = 0;
+    int i;
+    /* int flags = 0; */
     long l;
     char *tmp;
     time_t produced_at = 0, revoked_at = 0;
@@ -1223,7 +1224,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         }
         switch (cst->type) {
             case V_OCSP_CERTSTATUS_GOOD :
-                printf("%s\n", COLOR(MAKE_GREEN, "works"));
                 fprintf(stderr, "%s Certificate Status: %s\n", MSG_OK, COLOR(MAKE_GREEN, "good"));
                 break;
             case V_OCSP_CERTSTATUS_REVOKED :
@@ -1270,37 +1270,22 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
     }
 
     /* Debug cut off hack */
+    fprintf(stderr, "%s Response contains %d certificates\n", MSG_BLANK, sk_X509_num(br->certs));
+    OCSP_BASICRESP_free(br);
     return;
-
-
-    BIO *bp;
-    bp = BIO_new_fp(stderr,BIO_NOCLOSE);
-
-    if (BIO_printf(bp,"\n    Responses:\n") <= 0) goto err;
-    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
-
-    }
+#if 0
     if (!X509V3_extensions_print(bp, "Response Extensions", rd->responseExtensions, flags, 4))
         goto err;
-#if 0
     if(X509_signature_print(bp, br->signatureAlgorithm, br->signature) <= 0)
         goto err;
 #endif
 
-    BIO_printf(bp, "\nResponse contains %d certificates\n", sk_X509_num(br->certs));
 #if 0
     for (i=0; i<sk_X509_num(br->certs); i++) {
         X509_print(bp, sk_X509_value(br->certs,i));
         PEM_write_bio_X509(bp,sk_X509_value(br->certs,i));
     }
 #endif
-
-    ret = 1;
-    BIO_puts(bp, "\n");
-err:
-    OCSP_BASICRESP_free(br);
-    BIO_puts(bp, "\n");
-    return;
 }
 
 void
@@ -1680,8 +1665,10 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!servername && argv[argc-1] && strlen(argv[argc-1]) > 0)
-        servername = argv[argc-1];
+    if (!servername) {
+        fprintf(stderr, "Error: Please specify a hostname/IP with the option --host\n");
+        usage();
+    }
 
     /* OpenSSL init */
     global_ssl_init();
