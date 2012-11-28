@@ -49,6 +49,10 @@
 #define MSG_ERROR   ": " MAKE_RED    "error             " RESET_COLOR ":"
 #define MSG_BLANK   ":                   :"
 
+#define MALFORMED_ASN1_OBJECT MAKE_I_RED "<MALFORMED ASN1_OBJECT>" RESET_COLOR
+
+#define COLOR(c,str) c str RESET_COLOR
+
 
 /* Types */
 typedef enum san_type_e {
@@ -144,6 +148,7 @@ void diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp,
 time_t grid_asn1TimeToTimeT(unsigned char *asn1time, size_t len);
 time_t my_timegm(struct tm *tm);
 char *convert_time_t_to_utc_time_string(time_t t);
+char *ASN1_OBJECT_to_buffer(ASN1_OBJECT *a);
 
 
 /* Functions */
@@ -1042,13 +1047,45 @@ display_conn_info(struct sslconn *conn) {
     return;
 }
 
+char *
+ASN1_OBJECT_to_buffer(ASN1_OBJECT *a) {
+    char *buf;
+    int i, size = 64;
+
+    /* Create buffer */
+    if ((a == NULL) || (a->data == NULL))
+        return NULL;
+
+    buf = calloc(size, 1);
+    if (!buf)
+        return NULL;
+
+    /* Try to place the ASN1_OBJECT in buffer, i is total required write size */
+    i = i2t_ASN1_OBJECT(buf, size, a);
+    if (i > size - 1) {
+        free(buf);
+        size = i + 1;
+        buf = calloc(size, 1);
+        if (!buf)
+            return NULL;
+
+        i = i2t_ASN1_OBJECT(buf, size, a);
+    }
+    if (i <= 0) {
+        strncpy(buf,
+                MALFORMED_ASN1_OBJECT,
+                strlen(MALFORMED_ASN1_OBJECT));
+        return buf;
+    }
+    return buf;
+}
 
 void
 diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsigned short stapled) {
     int i, ret = 0, flags = 0;
     long l;
     char *tmp;
-    time_t producedAt = 0;
+    time_t produced_at = 0, revoked_at = 0;
     unsigned char *u_tmp;
     OCSP_CERTID *cid = NULL;
     OCSP_BASICRESP *br = NULL;
@@ -1134,57 +1171,89 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
     if (rd->producedAt &&
         (u_tmp = ASN1_STRING_data(rd->producedAt)) &&
         u_tmp) {
-        producedAt = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-        tmp = convert_time_t_to_utc_time_string(producedAt);
+        produced_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
+        free(u_tmp);
+        tmp = convert_time_t_to_utc_time_string(produced_at);
         if (!tmp) {
             fprintf(stderr, "Error: Out of memory\n");
             return;
         }
-        if (producedAt < (time(NULL) - (3600 * 24 * 14))) {
-            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 2 weeks ago on: %s UTC/Zulu\n", MSG_ERROR, convert_time_t_to_utc_time_string(producedAt));
-        } else if (producedAt < (time(NULL) - (3600 * 24 * 4))) {
-            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 4 days ago on: %s UTC/Zulu\n", MSG_WARNING, convert_time_t_to_utc_time_string(producedAt));
+        if (produced_at < (time(NULL) - (3600 * 24 * 14))) {
+            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 2 weeks ago on: %s UTC/Zulu\n",
+                            MSG_ERROR, convert_time_t_to_utc_time_string(produced_at));
+        } else if (produced_at < (time(NULL) - (3600 * 24 * 4))) {
+            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 4 days ago on: %s UTC/Zulu\n",
+                            MSG_WARNING, convert_time_t_to_utc_time_string(produced_at));
         } else {
-            fprintf(stderr, "%s The OCSP Response indicates to be newer then 4 days on: %s UTC/Zulu\n", MSG_OK, convert_time_t_to_utc_time_string(producedAt));
+            fprintf(stderr, "%s The OCSP Response indicates to be newer then 4 days on: %s UTC/Zulu\n",
+                            MSG_OK, convert_time_t_to_utc_time_string(produced_at));
         }
         free(tmp);
     }
 
-
-    /* Debug cut off hack */
-    return;
-
-
-    BIO *bp;
-    bp = BIO_new_fp(stderr,BIO_NOCLOSE);
-
-    if (BIO_printf(bp,"\n    Produced At: ")<=0) goto err;
-    if (!ASN1_GENERALIZEDTIME_print(bp, rd->producedAt)) goto err;
-    if (BIO_printf(bp,"\n    Responses:\n") <= 0) goto err;
     for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
-        if (! sk_OCSP_SINGLERESP_value(rd->responses, i)) continue;
+        /* Single response? */
         single = sk_OCSP_SINGLERESP_value(rd->responses, i);
-        cid = single->certId;
-        if(ocsp_certid_print(bp, cid, 4) <= 0) goto err;
-        cst = single->certStatus;
-        if (BIO_printf(bp,"    Cert Status: %s",
-                    OCSP_cert_status_str(cst->type)) <= 0)
-            goto err;
-        if (cst->type == V_OCSP_CERTSTATUS_REVOKED) {
-            rev = cst->value.revoked;
-            if (BIO_printf(bp, "\n    Revocation Time: ") <= 0)
-                goto err;
-            if (!ASN1_GENERALIZEDTIME_print(bp,
-                        rev->revocationTime))
-                goto err;
-            if (rev->revocationReason) {
-                l=ASN1_ENUMERATED_get(rev->revocationReason);
-                if (BIO_printf(bp,
-                            "\n    Revocation Reason: %s (0x%lx)",
-                            OCSP_crl_reason_str(l), l) <= 0)
-                    goto err;
-            }
+        if (!single) {
+            /* Or not really...? */
+            fprintf(stderr, "%s OCSP Single Response %d of %d is empty/non-existent. Trying next (if available)\n",
+                            MSG_WARNING, i, sk_OCSP_SINGLERESP_num(rd->responses));
         }
+
+        /* TODO : fix leaks ! */
+        cid = single->certId;
+        if (!cid) {
+            fprintf(stderr, "%s Malformed Response: No Certificate ID found\n", MSG_ERROR);
+            return;
+        }
+
+        tmp = ASN1_OBJECT_to_buffer(cid->hashAlgorithm->algorithm);
+        fprintf(stderr, "%s Cert ID: Hash Algorithm: %s, Issuer Name Hash: %s, Issuer Key Hash: %s, Serial Number: %s\n",
+                        MSG_BLANK,
+                        tmp,
+                        ASN1_STRING_data(cid->issuerNameHash),
+                        ASN1_STRING_data(cid->issuerKeyHash),
+                        ASN1_STRING_data(cid->serialNumber));
+        free(tmp);
+
+        cst = single->certStatus;
+        if (!cst) {
+            fprintf(stderr, "%s Malformed Response: No Certificate Status found\n", MSG_ERROR);
+            return;
+        }
+        switch (cst->type) {
+            case V_OCSP_CERTSTATUS_GOOD :
+                printf("%s\n", COLOR(MAKE_GREEN, "works"));
+                fprintf(stderr, "%s Certificate Status: %s\n", MSG_OK, COLOR(MAKE_GREEN, "good"));
+                break;
+            case V_OCSP_CERTSTATUS_REVOKED :
+                fprintf(stderr, "%s Certificate Status: %s\n", MSG_ERROR, COLOR(MAKE_I_RED, "revoked"));
+
+                rev = cst->value.revoked;
+                if (rev) {
+                    u_tmp = ASN1_STRING_data(rev->revocationTime);
+                    revoked_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
+                    free(u_tmp);
+                    tmp = convert_time_t_to_utc_time_string(revoked_at);
+                    fprintf(stderr, "%s Revocation time: %s\n", MSG_BLANK, tmp);
+                    free(tmp);
+
+                    if (rev->revocationReason) {
+                        l = ASN1_ENUMERATED_get(rev->revocationReason);
+                        fprintf(stderr, "%s Revocation reason: %s\n", MSG_BLANK, OCSP_crl_reason_str(l));
+                    }
+                }
+                break;
+            case V_OCSP_CERTSTATUS_UNKNOWN :
+                fprintf(stderr, "%s Certificate Status: %s\n", MSG_ERROR, COLOR(MAKE_RED, "unknown"));
+                break;
+            default:
+                fprintf(stderr, "%s Malformed certificate status found of value: %d\n", MSG_ERROR, cst->type);
+                break;
+
+        }
+
+#if 0
         if (BIO_printf(bp,"\n    This Update: ") <= 0) goto err;
         if (!ASN1_GENERALIZEDTIME_print(bp, single->thisUpdate))
             goto err;
@@ -1194,11 +1263,22 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                 goto err;
         }
         if (BIO_write(bp,"\n",1) <= 0) goto err;
-        if (!X509V3_extensions_print(bp,
-                    "Response Single Extensions",
-                    single->singleExtensions, flags, 8))
+        if (!X509V3_extensions_print(bp, "Response Single Extensions", single->singleExtensions, flags, 8))
             goto err;
         if (BIO_write(bp,"\n",1) <= 0) goto err;
+#endif
+    }
+
+    /* Debug cut off hack */
+    return;
+
+
+    BIO *bp;
+    bp = BIO_new_fp(stderr,BIO_NOCLOSE);
+
+    if (BIO_printf(bp,"\n    Responses:\n") <= 0) goto err;
+    for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
+
     }
     if (!X509V3_extensions_print(bp, "Response Extensions", rd->responseExtensions, flags, 4))
         goto err;
@@ -1599,6 +1679,9 @@ int main(int argc, char *argv[]) {
                 break;
         }
     }
+
+    if (!servername && argv[argc-1] && strlen(argv[argc-1]) > 0)
+        servername = argv[argc-1];
 
     /* OpenSSL init */
     global_ssl_init();
