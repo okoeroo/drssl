@@ -1086,7 +1086,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
     /* int flags = 0; */
     long l;
     char *tmp;
-    time_t produced_at = 0, revoked_at = 0;
+    time_t produced_at = 0, revoked_at = 0, t = 0;
     unsigned char *u_tmp;
     OCSP_CERTID *cid = NULL;
     OCSP_BASICRESP *br = NULL;
@@ -1253,15 +1253,29 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
 
         }
 
-#if 0
-        if (BIO_printf(bp,"\n    This Update: ") <= 0) goto err;
-        if (!ASN1_GENERALIZEDTIME_print(bp, single->thisUpdate))
-            goto err;
-        if (single->nextUpdate) {
-            if (BIO_printf(bp,"\n    Next Update: ") <= 0)goto err;
-            if (!ASN1_GENERALIZEDTIME_print(bp,single->nextUpdate))
-                goto err;
+        if (!single->thisUpdate) {
+            fprintf(stderr, "%s Malformed OSCP Response, no This Update field found\n", MSG_ERROR);
+        } else {
+            u_tmp = ASN1_STRING_data(single->thisUpdate);
+            t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
+            free(u_tmp);
+            tmp = convert_time_t_to_utc_time_string(t);
+            fprintf(stderr, "%s This update: %s\n", MSG_BLANK, tmp);
+            free(tmp);
         }
+
+        if (!single->thisUpdate) {
+            fprintf(stderr, "%s No Next Update field found\n", MSG_WARNING);
+        } else {
+            u_tmp = ASN1_STRING_data(single->nextUpdate);
+            t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
+            free(u_tmp);
+            tmp = convert_time_t_to_utc_time_string(t);
+            fprintf(stderr, "%s Next update: %s\n", MSG_BLANK, tmp);
+            free(tmp);
+        }
+#if 0
+
         if (BIO_write(bp,"\n",1) <= 0) goto err;
         if (!X509V3_extensions_print(bp, "Response Single Extensions", single->singleExtensions, flags, 8))
             goto err;
@@ -1271,7 +1285,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
 
     /* Debug cut off hack */
     fprintf(stderr, "%s Response contains %d certificates\n", MSG_BLANK, sk_X509_num(br->certs));
-    OCSP_BASICRESP_free(br);
+    /* OCSP_BASICRESP_free(br); */
     return;
 #if 0
     if (!X509V3_extensions_print(bp, "Response Extensions", rd->responseExtensions, flags, 4))
