@@ -347,18 +347,26 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
         switch (errnum) {
             case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
             case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-                fprintf(stderr, "%s: Override Self-Signed certificate error.\n",
+                fprintf(stderr, "%s %s: Override Self-Signed certificate error.\n",
+                                MSG_ERROR,
                                 __func__);
                 ok = 1;
                 break;
             case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
-                fprintf(stderr, "%s: Unable to find the issuer (locally on disk) of the certificate now in evaluation.\n"\
-                                "\tOptions: 1. Certificate was signed by an unknown CA, see the --capath and --cafile options to solve this perhaps.\n"\
-                                "\t         2. The server didn't send an intermediate CA certificate to complete the certificate chain\n", __func__);
+                fprintf(stderr, "%s %s: Unable to find the issuer (locally on disk) of the "
+                                        "certificate now in evaluation.\n"\
+                                "%s         Options: 1. Certificate was signed by an unknown CA, see the "
+                                                     "--capath and --cafile options to solve this perhaps.\n"
+                                "%s                  2. The server didn't send an intermediate CA "
+                                                     "certificate to complete the certificate chain\n",
+                                MSG_ERROR,
+                                __func__,
+                                MSG_BLANK,
+                                MSG_BLANK);
                 break;
             default:
-                fprintf(stderr, "%s:  errnum %d: %s\n",
-                                logstr, (int) errnum, X509_verify_cert_error_string(errnum));
+                fprintf(stderr, "%s %s: errnum %d: %s\n",
+                                MSG_ERROR, __func__, (int) errnum, X509_verify_cert_error_string(errnum));
                 break;
         }
     }
