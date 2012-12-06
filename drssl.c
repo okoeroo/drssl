@@ -96,18 +96,22 @@ struct diagnostics {
 
 
 struct sslconn {
-    SSL_CTX *ctx;
-    BIO *bio;
-    int sock;
-    SSL *ssl;
-    OCSP_RESPONSE *ocsp_stapling;
-    char *cafile;
-    char *capath;
-    unsigned short sslversion;
     char *host_ip;
     char *sni;
     unsigned short port;
     int ipversion;
+    int sock;
+
+    SSL_CTX *ctx;
+    BIO *bio;
+    SSL *ssl;
+    unsigned short sslversion;
+    OCSP_RESPONSE *ocsp_stapling;
+    char *cafile;
+    char *capath;
+    char *clientcert;
+    char *clientkey;
+    char *clientpass;
 
     /* struct certinfo *certinfo; */
     struct diagnostics *diagnostics;
@@ -121,7 +125,7 @@ void global_ssl_init(void);
 int x509IsCA(X509 *cert);
 static int ocsp_resp_cb(SSL *s, void *arg);
 static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
-int setup_client_ctx(struct sslconn *conn, unsigned short type);
+int setup_client_ctx(struct sslconn *conn);
 int create_client_socket (int * client_socket, const char * server,
                           int port, int ipversion,
                           int time_out_milliseconds);
@@ -136,10 +140,12 @@ int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
 void display_certinfo(struct certinfo *certinfo);
 void display_conn_info(struct sslconn *conn);
 void diagnose_conn_info(struct sslconn *conn);
-int connect_to_serv_port (char *servername, unsigned short servport,
-                          int ipversion,
-                          unsigned short sslversion, char *cafile,
-                          char *capath, char *sni);
+int connect_to_serv_port(char *servername, unsigned short servport,
+                         int ipversion,
+                         unsigned short sslversion,
+                         char *cafile, char *capath,
+                         char *cert, char *key, char *passphrase,
+                         char *sni);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
@@ -363,11 +369,13 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
 
 /* Use: 2(SSLv2), 3(SSLv3), 10(TLS1.0), 11(TLS1.1), 12(TLS1.2) */
 int
-setup_client_ctx(struct sslconn *conn, unsigned short type) {
+setup_client_ctx(struct sslconn *conn) {
+    int rc = 0;
+
     if (!conn)
         return -1;
 
-    switch (type) {
+    switch (conn->sslversion) {
         case 2:
             conn->ctx = SSL_CTX_new(SSLv23_method());
             SSL_CTX_set_options(conn->ctx, SSL_OP_ALL|SSL_OP_NO_SSLv3);
@@ -394,9 +402,8 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
                     __func__);
             return -2;
     }
-    conn->sslversion = type;
 
-    SSL_CTX_set_verify_depth(conn->ctx, 20);
+    SSL_CTX_set_verify_depth(conn->ctx, 99);
     if (SSL_CTX_set_cipher_list(conn->ctx, CIPHER_LIST) != 1) {
         fprintf(stderr, "Error in setting cipher list, " \
                         "no valid ciphers provided in \"%s\"\n",
@@ -409,7 +416,28 @@ setup_client_ctx(struct sslconn *conn, unsigned short type) {
         (1 != SSL_CTX_load_verify_locations(conn->ctx,
                                             conn->cafile,
                                             conn->capath))) {
-        fprintf(stderr, "SSL_CTX_load_verify_locations failed\n");
+        fprintf(stderr, "Warning: SSL_CTX_load_verify_locations failed\n");
+    }
+
+    /* Use a client certificate for authentication */
+    if (conn->clientcert && conn->clientkey) {
+        rc = SSL_CTX_use_certificate_chain_file(conn->ctx, conn->clientcert);
+        if (rc != 1) {
+            fprintf(stderr, "Error loading client certificate (chain) from "
+                            "file \"%s\", with reason: %s\n",
+                            conn->clientcert,
+                            ERR_reason_error_string(ERR_get_error()));
+            return -4;
+        }
+
+        rc = SSL_CTX_use_PrivateKey_file(conn->ctx, conn->clientkey, SSL_FILETYPE_PEM);
+        if (rc != 1) {
+            fprintf(stderr, "Error loading client private key file from "
+                            "file \"%s\", with reason: %s\n",
+                            conn->clientkey,
+                            ERR_reason_error_string(ERR_get_error()));
+            return -5;
+        }
     }
 
     /* Set custom callback */
@@ -1478,6 +1506,9 @@ connect_to_serv_port(char *servername,
                      unsigned short sslversion,
                      char *cafile,
                      char *capath,
+                     char *cert,
+                     char *key,
+                     char *passphrase,
                      char *sni) {
     struct sslconn *conn;
 
@@ -1493,15 +1524,19 @@ connect_to_serv_port(char *servername,
     if (conn == NULL)
         return -1;
 
-    conn->host_ip   = servername;
-    conn->port      = servport;
-    conn->ipversion = ipversion;
-    conn->cafile    = cafile;
-    conn->capath    = capath;
-    conn->sni       = sni;
+    conn->host_ip     = servername;
+    conn->port        = servport;
+    conn->ipversion   = ipversion;
+    conn->sslversion  = sslversion;
+    conn->cafile      = cafile;
+    conn->capath      = capath;
+    conn->clientcert  = cert;
+    conn->clientkey   = key;
+    conn->clientpass  = passphrase;
+    conn->sni         = sni;
 
     /* Create SSL context */
-    if (setup_client_ctx(conn, sslversion) < 0) {
+    if (setup_client_ctx(conn) < 0) {
         return -2;
     }
 
@@ -1555,6 +1590,9 @@ usage(void) {
     printf("\t--12 (use TLSv1.2)\n");
     printf("\t--cafile <path to CA (bundle) file>\n");
     printf("\t--capath <path to CA directory>\n");
+    printf("\t--cert <path to client certificate>\n");
+    printf("\t--key <path to client private key file>\n");
+    printf("\t--passphrase <passphrase to unlock the client private key file>\n");
     printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
     printf("\n");
 
@@ -1566,11 +1604,8 @@ int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
     int sslversion = 10;
     int ipversion = PF_UNSPEC; /* System preference is leading */
-    char *servername = NULL;
-    char *cafile = NULL;
-    char *capath = NULL;
-    char *sni = NULL;
-    unsigned short port = 443;
+    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL;
+    unsigned short port = 443; /* default HTTPS port number */
     long port_l = 0;
 
     static struct option long_options[] = /* options */
@@ -1587,7 +1622,10 @@ int main(int argc, char *argv[]) {
         {"port",        required_argument, 0, 'p'},
         {"sni",         required_argument, 0, 's'},
         {"cafile",      required_argument, 0, 'F'},
-        {"capath" ,     required_argument, 0, 'P'}
+        {"capath" ,     required_argument, 0, 'P'},
+        {"cert",        required_argument, 0, 'c'},
+        {"key",         required_argument, 0, 'k'},
+        {"passphrase",  required_argument, 0, 'w'}
     };
 
     opterr = 0;
@@ -1670,6 +1708,30 @@ int main(int argc, char *argv[]) {
                     usage();
                 }
                 break;
+            case 'c':
+                if (optarg)
+                    cert = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case 'k':
+                if (optarg)
+                    key = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case 'w':
+                if (optarg)
+                    passphrase = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
             case '?':
                 fprintf(stderr, "Unknown option %s", optarg);
                 break;
@@ -1684,9 +1746,17 @@ int main(int argc, char *argv[]) {
         usage();
     }
 
+    /* If only one is provided, use one or the other for the one or the other */
+    if (!cert && key) cert = key;
+    if (cert && !key) key = cert;
+
     /* OpenSSL init */
     global_ssl_init();
 
-    return connect_to_serv_port(servername, port, ipversion, sslversion, cafile, capath, sni);
+    return connect_to_serv_port(servername, port,
+                                ipversion, sslversion,
+                                cafile, capath,
+                                cert, key, passphrase,
+                                sni);
 }
 
