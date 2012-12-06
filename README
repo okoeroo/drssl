@@ -30,6 +30,9 @@ Usage:
     --help
     --host <host or IP>
     --port <port> - default is: 443
+    --4 (force IPv4 - default is system specific)
+    --6 (force IPv6 - default is system specific)
+
     --2 (use SSLv2)
     --3 (use SSLv3)
     --10 (use TLSv1.0) - the default
@@ -37,6 +40,9 @@ Usage:
     --12 (use TLSv1.2)
     --cafile <path to CA (bundle) file>
     --capath <path to CA directory>
+    --cert <path to client certificate>
+    --key <path to client private key file>
+    --passphrase <passphrase to unlock the client private key file>
     --sni <TLS SNI (Server Name Indication) hostname>
 
 
