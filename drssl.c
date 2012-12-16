@@ -123,7 +123,9 @@ struct certinfo *create_certinfo(void);
 struct sslconn *create_sslconn(void);
 void global_ssl_init(void);
 int x509IsCA(X509 *cert);
+#if OPENSSL_VERSION_NUMBER >= 0x10000000L
 static int ocsp_resp_cb(SSL *s, void *arg);
+#endif
 static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
 int setup_client_ctx(struct sslconn *conn);
 int create_client_socket (int * client_socket, const char * server,
@@ -296,7 +298,8 @@ convert_time_t_to_utc_time_string(time_t t) {
     return buf;
 }
 
-/* OCSP callback */
+#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+/* OCSP Stapling callback */
 static int
 ocsp_resp_cb(SSL *s, void *arg) {
     struct sslconn *conn = (struct sslconn *)arg;
@@ -324,6 +327,7 @@ ocsp_resp_cb(SSL *s, void *arg) {
 
     return 1;
 }
+#endif /* OPENSSL_VERSION_NUMBER >= 0x10000000L */
 
 /* Custom verification callback */
 static int
@@ -451,9 +455,11 @@ setup_client_ctx(struct sslconn *conn) {
     /* Set custom callback */
     SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
 
-    /* Set up OCSP Stapling callback setup */
-    SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
-    SSL_CTX_set_tlsext_status_arg(conn->ctx, conn);
+	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+		/* Set up OCSP Stapling callback setup */
+		SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
+		SSL_CTX_set_tlsext_status_arg(conn->ctx, conn);
+	#endif
 
     return 0;
 }
@@ -571,13 +577,17 @@ connect_ssl_over_socket(struct sslconn *conn) {
         return -2;
     }
 
-    /* Setup OCSP stapling on the SSL object */
-    SSL_set_tlsext_status_type(conn->ssl, TLSEXT_STATUSTYPE_ocsp);
+	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+		/* Setup OCSP stapling on the SSL object */
+		SSL_set_tlsext_status_type(conn->ssl, TLSEXT_STATUSTYPE_ocsp);
+	#endif /* OPENSSL_VERSION_NUMBER >= 0x10000000L */
 
-    /* Set TLS SNI (Server Name Indication) */
-    if (conn->sni && !SSL_set_tlsext_host_name(conn->ssl, conn->sni)) {
-        fprintf(stderr, "Unable to set TLS servername extension (SNI).\n");
-    }
+	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+		/* Set TLS SNI (Server Name Indication) */
+		if (conn->sni && !SSL_set_tlsext_host_name(conn->ssl, conn->sni)) {
+			fprintf(stderr, "Unable to set TLS servername extension (SNI).\n");
+		}
+	#endif
 
     /* Connecting the Socket to the SSL layer */
     conn->bio = BIO_new_socket (conn->sock, BIO_NOCLOSE);
