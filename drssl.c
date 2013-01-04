@@ -117,6 +117,7 @@ struct sslconn {
 
     char *dumpdir;
     int   noverify;
+    int   quiet;
 
     /* struct certinfo *certinfo; */
     struct diagnostics *diagnostics;
@@ -139,9 +140,9 @@ int create_client_socket (int * client_socket, const char * server,
                           int time_out_milliseconds);
 int connect_bio_to_serv_port(struct sslconn *conn);
 int connect_ssl_over_socket(struct sslconn *conn);
-int extract_subjectaltnames(struct certinfo *certinfo);
-int extract_commonname(struct certinfo *certinfo);
-int extract_certinfo_details(struct certinfo *certinfo);
+int extract_subjectaltnames(struct certinfo *certinfo, int quiet);
+int extract_commonname(struct certinfo *certinfo, int quiet);
+int extract_certinfo_details(struct certinfo *certinfo, int quiet);
 int extract_peer_certinfo(struct sslconn *conn);
 static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent);
 int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
@@ -316,17 +317,17 @@ ocsp_resp_cb(SSL *s, void *arg) {
     int len;
 
     len = SSL_get_tlsext_status_ocsp_resp(s, &p);
-    fprintf(stderr, "OCSP response: ");
     if (!p) {
-        fprintf(stderr, "no response sent\n");
+        fprintf(stderr, "no OCSP response sent\n");
         return 1;
     }
+    if (!conn->quiet) fprintf(stderr, "OCSP response: ");
     rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
     if (!rsp) {
         fprintf(stderr, "response parse error\n");
         return 1;
     }
-    fprintf(stderr, "got stapled response\n");
+    if (!conn->quiet) fprintf(stderr, "got stapled response\n");
 
     /* Record stapled response */
     if (conn) {
@@ -567,7 +568,7 @@ int
 connect_bio_to_serv_port(struct sslconn *conn) {
     int sock;
 
-    fprintf(stderr, "%s\n", __func__);
+    if (!conn->quiet) fprintf(stderr, "%s\n", __func__);
 
     if (!conn || !conn->host_ip)
         return -1;
@@ -577,8 +578,8 @@ connect_bio_to_serv_port(struct sslconn *conn) {
                         conn->host_ip, conn->port);
         return -2;
     }
-    fprintf(stderr, "Connected to \"%s\" on port \'%d\'\n",
-            conn->host_ip, conn->port);
+    if (!conn->quiet) fprintf(stderr, "Connected to \"%s\" on port \'%d\'\n",
+                                      conn->host_ip, conn->port);
     conn->sock = sock;
     return 0;
 }
@@ -586,7 +587,7 @@ connect_bio_to_serv_port(struct sslconn *conn) {
 /* Connect struct sslconn object using SSL over an existing BIO */
 int
 connect_ssl_over_socket(struct sslconn *conn) {
-    fprintf(stderr, "%s\n", __func__);
+    if (!conn->quiet) fprintf(stderr, "%s\n", __func__);
 
     if (!conn || !conn->host_ip || !conn->sock)
         return -1;
@@ -615,7 +616,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
         SSL_free(conn->ssl);
         return -3;
     }
-    fprintf(stderr, "BIO created from socket\n");
+    if (!conn->quiet) fprintf(stderr, "BIO created from socket\n");
 
     SSL_set_bio(conn->ssl, conn->bio, conn->bio);
     if (SSL_connect(conn->ssl) <= 0) {
@@ -623,14 +624,12 @@ connect_ssl_over_socket(struct sslconn *conn) {
         return -4;
     }
 
-
-
     return 0;
 }
 
 /* <0: error, 0: No SAN found, 1: SAN found */
 int
-extract_subjectaltnames(struct certinfo *certinfo) {
+extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
     int i, j, extcount;
     unsigned short found_san = 0;
     X509_EXTENSION          *ext;
@@ -645,7 +644,7 @@ extract_subjectaltnames(struct certinfo *certinfo) {
     void                    *ext_str = NULL;
     struct subjectaltname   *p_san;
 
-    fprintf(stderr, "%s\n", __func__);
+    if (!quiet) fprintf(stderr, "%s\n", __func__);
 
     if (!certinfo || !certinfo->cert)
         return -1;
@@ -720,12 +719,12 @@ extract_subjectaltnames(struct certinfo *certinfo) {
 }
 
 int
-extract_commonname(struct certinfo *certinfo) {
+extract_commonname(struct certinfo *certinfo, int quiet) {
     X509_NAME *subj;
     int cnt;
     char *cn;
 
-    fprintf(stderr, "%s\n", __func__);
+    if (!quiet) fprintf(stderr, "%s\n", __func__);
 
     if (!certinfo || !certinfo->cert)
         return -1;
@@ -749,19 +748,19 @@ extract_commonname(struct certinfo *certinfo) {
 }
 
 int
-extract_certinfo_details(struct certinfo *certinfo) {
+extract_certinfo_details(struct certinfo *certinfo, int quiet) {
     EVP_PKEY *pktmp;
 
     if (!certinfo)
         return -1;
 
     /* List and register the SubjectAltNames */
-    if (extract_subjectaltnames(certinfo) < 0) {
+    if (extract_subjectaltnames(certinfo, quiet) < 0) {
         return -2;
     }
 
     /* Extract and register the Common Name */
-    if (extract_commonname(certinfo) < 0) {
+    if (extract_commonname(certinfo, quiet) < 0) {
         return -3;
     }
 
@@ -812,7 +811,7 @@ extract_peer_certinfo(struct sslconn *conn) {
     if (!conn || !conn->ssl)
         return -1;
 
-    fprintf(stderr, "%s\n", __func__);
+    if (!conn->quiet) fprintf(stderr, "%s\n", __func__);
 
     /* Record peer certificate */
     peer = SSL_get_peer_certificate(conn->ssl);
@@ -846,7 +845,7 @@ extract_peer_certinfo(struct sslconn *conn) {
         for (i = 0; i < depth; i++) {
             /* De-dup */
             if (find_X509_in_certinfo_tail(conn, sk_X509_value(stack, i))) {
-                fprintf(stderr, "Discard certificate already captured\n");
+                if (!conn->quiet) fprintf(stderr, "Discard certificate already captured\n");
                 continue;
             }
 
@@ -863,7 +862,7 @@ extract_peer_certinfo(struct sslconn *conn) {
 
         /* Loop over found certinfo structs to extract certificate details per certificate */
         for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
-            extract_certinfo_details(certinfo);
+            extract_certinfo_details(certinfo, conn->quiet);
             tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
         }
     }
@@ -1618,7 +1617,7 @@ connect_to_serv_port(char *servername,
                      int quiet) {
     struct sslconn *conn;
 
-    fprintf(stderr, "%s\n", __func__);
+    if (!quiet) fprintf(stderr, "%s\n", __func__);
 
     if (!servername) {
         fprintf(stderr, "Error: no host specified\n");
@@ -1642,6 +1641,7 @@ connect_to_serv_port(char *servername,
     conn->sni         = sni;
     conn->dumpdir     = dumpdir;
     conn->noverify    = noverify;
+    conn->quiet       = quiet;
 
     /* Create SSL context */
     if (setup_client_ctx(conn) < 0) {
@@ -1657,17 +1657,15 @@ connect_to_serv_port(char *servername,
     if (connect_ssl_over_socket(conn) < 0) {
         return -4;
     }
-    fprintf(stderr, "SSL Connection opened\n");
+    if (!conn->quiet) fprintf(stderr, "SSL Connection opened\n");
 
     /* Extract peer cert */
     if (extract_peer_certinfo(conn) < 0) {
         return -5;
     }
 
-    if (conn->dumpdir) {
-        /* Dump all information as files into a directory */
-        dump_to_disk(conn);
-    } else {
+    /* No need to write and do stuff if the output is not desired */
+    if (!conn->quiet) {
         /* Display / Show the information we gathered */
         display_conn_info(conn);
 
@@ -1675,9 +1673,14 @@ connect_to_serv_port(char *servername,
         diagnose_conn_info(conn);
     }
 
-    fprintf(stderr, "SSL Shutting down.\n");
+    if (conn->dumpdir) {
+        /* Dump all information as files into a directory */
+        dump_to_disk(conn);
+    }
+
+    if (!conn->quiet) fprintf(stderr, "SSL Shutting down.\n");
     SSL_shutdown(conn->ssl);
-    fprintf(stderr, "SSL Connection closed\n");
+    if (!conn->quiet) fprintf(stderr, "SSL Connection closed\n");
 
     SSL_clear(conn->ssl);
     SSL_free(conn->ssl);
