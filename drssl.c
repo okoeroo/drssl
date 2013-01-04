@@ -154,7 +154,8 @@ int connect_to_serv_port(char *servername, unsigned short servport,
                          unsigned short sslversion,
                          char *cafile, char *capath,
                          char *cert, char *key, char *passphrase,
-                         char *sni, char *dumpdir, int noverify);
+                         char *sni, char *dumpdir,
+                         int noverify, int quiet);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
@@ -1009,20 +1010,20 @@ display_certinfo(struct certinfo *certinfo) {
         return;
 
     tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
-    fprintf(stderr, ": Subject DN        : %s\n", tmp);
+    fprintf(stdout, ": Subject DN        : %s\n", tmp);
     free(tmp);
     tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
-    fprintf(stderr, ": Issuer DN         : %s\n", tmp);
+    fprintf(stdout, ": Issuer DN         : %s\n", tmp);
     free(tmp);
 
-    fprintf(stderr, ": Depth             : %u\n", certinfo->at_depth);
-    fprintf(stderr, ": Public key bits(p): %d\n", certinfo->bits);
+    fprintf(stdout, ": Depth             : %u\n", certinfo->at_depth);
+    fprintf(stdout, ": Public key bits(p): %d\n", certinfo->bits);
 
     for (p_san = TAILQ_FIRST(&(certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
-        fprintf(stderr, ": Subject Alt Name  : %s\n", p_san->value);
+        fprintf(stdout, ": Subject Alt Name  : %s\n", p_san->value);
         tmp_p_san = TAILQ_NEXT(p_san, entries);
     }
-    fprintf(stderr, ": Common name       : %s\n", certinfo->commonname);
+    fprintf(stdout, ": Common name       : %s\n", certinfo->commonname);
 
     return;
 }
@@ -1036,41 +1037,41 @@ display_conn_info(struct sslconn *conn) {
     const SSL_CIPHER      *c;
     const COMP_METHOD     *comp, *expansion;
 
-    fprintf(stderr, MAKE_LIGHT_BLUE "=== Report ===" RESET_COLOR "\n");
+    fprintf(stdout, MAKE_LIGHT_BLUE "=== Report ===" RESET_COLOR "\n");
 
-    fprintf(stderr, ": Host/IP           : %s\n", conn->host_ip);
-    fprintf(stderr, ": Port              : %d\n", conn->port);
-    fprintf(stderr, ": IP version        : %s\n", conn->ipversion == PF_UNSPEC ?
+    fprintf(stdout, ": Host/IP           : %s\n", conn->host_ip);
+    fprintf(stdout, ": Port              : %d\n", conn->port);
+    fprintf(stdout, ": IP version        : %s\n", conn->ipversion == PF_UNSPEC ?
                                                       "Unspecified, up to system defaults" :
                                                       conn->ipversion == AF_INET6 ?
                                                         "IPv6" :
                                                         conn->ipversion == AF_INET ?
                                                             "IPv4" :
                                                             MAKE_I_RED "Unknown" RESET_COLOR);
-    fprintf(stderr, ": TLS ext SNI       : %s\n", conn->sni ? conn->sni : "not set");
-    fprintf(stderr, ": Socket number     : %d\n", conn->sock);
+    fprintf(stdout, ": TLS ext SNI       : %s\n", conn->sni ? conn->sni : "not set");
+    fprintf(stdout, ": Socket number     : %d\n", conn->sock);
     switch (conn->sslversion) {
-        case  0: fprintf(stderr, ": Wished SSL version: NONE\n"); break;
-        case  2: fprintf(stderr, ": Wished SSL version: SSLv2\n"); break;
-        case  3: fprintf(stderr, ": Wished SSL version: SSLv3\n"); break;
-        case 10: fprintf(stderr, ": Wished SSL version: TLS1.0\n"); break;
-        case 11: fprintf(stderr, ": Wished SSL version: TLS1.1\n"); break;
-        case 12: fprintf(stderr, ": Wished SSL version: TLS1.2\n"); break;
-        default: fprintf(stderr, ": Wished SSL version: UNKNOWN\n"); break;
+        case  0: fprintf(stdout, ": Wished SSL version: NONE\n"); break;
+        case  2: fprintf(stdout, ": Wished SSL version: SSLv2\n"); break;
+        case  3: fprintf(stdout, ": Wished SSL version: SSLv3\n"); break;
+        case 10: fprintf(stdout, ": Wished SSL version: TLS1.0\n"); break;
+        case 11: fprintf(stdout, ": Wished SSL version: TLS1.1\n"); break;
+        case 12: fprintf(stdout, ": Wished SSL version: TLS1.2\n"); break;
+        default: fprintf(stdout, ": Wished SSL version: UNKNOWN\n"); break;
     }
     /* int SSL_version(conn->ssl); */
     /* DTLS1_VERSION */
 
     c = SSL_get_current_cipher(conn->ssl);
-    fprintf(stderr, ": SSL Ciphers used  : %s / %s\n",
+    fprintf(stdout, ": SSL Ciphers used  : %s / %s\n",
                     SSL_CIPHER_get_name(c), SSL_CIPHER_get_version(c));
 
     comp = SSL_get_current_compression(conn->ssl);
-    fprintf(stderr, ": SSL Compression   : %s\n",
+    fprintf(stdout, ": SSL Compression   : %s\n",
                     comp ? SSL_COMP_get_name(comp) : "NONE");
 
     expansion = SSL_get_current_expansion(conn->ssl);
-    fprintf(stderr, ": SSL Expansion     : %s\n",
+    fprintf(stdout, ": SSL Expansion     : %s\n",
                     expansion ? SSL_COMP_get_name(expansion) : "NONE");
 
     /* Print the time from the random info */
@@ -1082,30 +1083,30 @@ display_conn_info(struct sslconn *conn) {
         fprintf(stderr, "Error: Out of memory\n");
         return;
     }
-    fprintf(stderr, ": random->unix_time : %lu, %s (utc/zulu)\n",
+    fprintf(stdout, ": random->unix_time : %lu, %s (utc/zulu)\n",
                     server_time_s, buf);
     free(buf);
 
-    fprintf(stderr, ": Certificate?      : %s\n", conn->diagnostics->has_peer ? "Yes" : "No");
-    fprintf(stderr, ": Stack?            : %s\n", conn->diagnostics->has_stack ? "Yes" : "No");
+    fprintf(stdout, ": Certificate?      : %s\n", conn->diagnostics->has_peer ? "Yes" : "No");
+    fprintf(stdout, ": Stack?            : %s\n", conn->diagnostics->has_stack ? "Yes" : "No");
 
     /* Got certificate related information? */
     if (!(TAILQ_EMPTY(&(conn->certinfo_head)))) {
         for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
-            fprintf(stderr, ": " MAKE_GREEN "---" RESET_COLOR "\n");
+            fprintf(stdout, ": " MAKE_GREEN "---" RESET_COLOR "\n");
             display_certinfo(certinfo);
             tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
         }
-        fprintf(stderr, ": " MAKE_GREEN "---" RESET_COLOR "\n");
+        fprintf(stdout, ": " MAKE_GREEN "---" RESET_COLOR "\n");
 
-        fprintf(stderr, ": OCSP Stapling     : %s\n", conn->ocsp_stapling ? "Yes" : "No");
+        fprintf(stdout, ": OCSP Stapling     : %s\n", conn->ocsp_stapling ? "Yes" : "No");
         if (conn->ocsp_stapling) {
-            fprintf(stderr, ": OCSP Stapled Resp.:\n");
+            fprintf(stdout, ": OCSP Stapled Resp.:\n");
             extract_OCSP_RESPONSE_data(conn->ocsp_stapling, 0);
         }
 
     } else {
-        fprintf(stderr, ": No Certificate info from.\n");
+        fprintf(stdout, ": No Certificate info from.\n");
     }
 
     return;
@@ -1167,67 +1168,67 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
     /* init */
     rb = ocsp->responseBytes;
 
-    fprintf(stderr, MAKE_LIGHT_BLUE "=== Diagnose OCSP ===" RESET_COLOR "\n");
-    fprintf(stderr, "%s OCSP Source %s\n", MSG_BLANK, stapled ? "OCSP Stapling" : "AIA record on certificate");
+    fprintf(stdout, MAKE_LIGHT_BLUE "=== Diagnose OCSP ===" RESET_COLOR "\n");
+    fprintf(stdout, "%s OCSP Source %s\n", MSG_BLANK, stapled ? "OCSP Stapling" : "AIA record on certificate");
 
     /* OCSP Response status */
     l = ASN1_ENUMERATED_get(ocsp->responseStatus);
     if (l == OCSP_RESPONSE_STATUS_SUCCESSFUL) {
-        fprintf(stderr, "%s OCSP Response Status is successful (generic OCSP answer)\n", MSG_OK);
+        fprintf(stdout, "%s OCSP Response Status is successful (generic OCSP answer)\n", MSG_OK);
     } else {
-        fprintf(stderr, "%s OCSP Response Status is %s\n", MSG_ERROR, OCSP_response_status_str(l));
+        fprintf(stdout, "%s OCSP Response Status is %s\n", MSG_ERROR, OCSP_response_status_str(l));
     }
 
     /* Actual bytes */
     if (!rb) {
-        fprintf(stderr, "%s OCSP Response data is malformed or non-existant.\n", MSG_ERROR);
+        fprintf(stdout, "%s OCSP Response data is malformed or non-existant.\n", MSG_ERROR);
         return;
     }
 
     /* Only accept OCSP Basic response */
     if (OBJ_obj2nid(rb->responseType) == NID_id_pkix_OCSP_basic) {
-        fprintf(stderr, "%s OCSP Response Type: Basic OCSP Response\n", MSG_OK);
+        fprintf(stdout, "%s OCSP Response Type: Basic OCSP Response\n", MSG_OK);
     } else {
-        fprintf(stderr, "%s OCSP Response Type: unknown response type\n", MSG_ERROR);
+        fprintf(stdout, "%s OCSP Response Type: unknown response type\n", MSG_ERROR);
         return;
     }
 
     /* Get OCSP Response Basic */
     br = OCSP_response_get1_basic(ocsp);
     if (!br) {
-        fprintf(stderr, "%s Malformed Response: Basic OCSP Response got not be retrieved\n", MSG_ERROR);
+        fprintf(stdout, "%s Malformed Response: Basic OCSP Response got not be retrieved\n", MSG_ERROR);
         return;
     }
 
     /* Get Raw RespData */
     rd = br->tbsResponseData;
     if (!rd) {
-        fprintf(stderr, "%s Malformed Response: Raw Response data was not retrieved\n", MSG_ERROR);
+        fprintf(stdout, "%s Malformed Response: Raw Response data was not retrieved\n", MSG_ERROR);
         return;
     }
 
     /* OCSP Response Version */
     l = ASN1_INTEGER_get(rd->version);
     if (l != 0) {
-        fprintf(stderr, "%s Unsupported OCSP Response version: %lu\n", MSG_ERROR, l + 1);
+        fprintf(stdout, "%s Unsupported OCSP Response version: %lu\n", MSG_ERROR, l + 1);
         return;
     }
 
     /* Responder ID */
     rid = rd->responderId;
     if (!rid) {
-        fprintf(stderr, "%s Malformed Response: No Responder ID found\n", MSG_ERROR);
+        fprintf(stdout, "%s Malformed Response: No Responder ID found\n", MSG_ERROR);
         return;
     }
     switch (rid->type) {
         case V_OCSP_RESPID_NAME:
             tmp = X509_NAME_oneline(rid->value.byName, NULL, 0);
-            fprintf(stderr, "%s Responder ID (byName): \"%s\"\n", MSG_BLANK, tmp);
+            fprintf(stdout, "%s Responder ID (byName): \"%s\"\n", MSG_BLANK, tmp);
             free(tmp);
             break;
         case V_OCSP_RESPID_KEY:
             u_tmp = ASN1_STRING_data(rid->value.byKey);
-            fprintf(stderr, "%s Responder ID (byKey): \'%s\'\n", MSG_BLANK, u_tmp);
+            fprintf(stdout, "%s Responder ID (byKey): \'%s\'\n", MSG_BLANK, u_tmp);
             free(u_tmp);
             break;
     }
@@ -1240,17 +1241,17 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         free(u_tmp);
         tmp = convert_time_t_to_utc_time_string(produced_at);
         if (!tmp) {
-            fprintf(stderr, "Error: Out of memory\n");
+            fprintf(stdout, "Error: Out of memory\n");
             return;
         }
         if (produced_at < (time(NULL) - (3600 * 24 * 14))) {
-            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 2 weeks ago on: %s UTC/Zulu\n",
+            fprintf(stdout, "%s The OCSP Response indicates to be produced more then 2 weeks ago on: %s UTC/Zulu\n",
                             MSG_ERROR, convert_time_t_to_utc_time_string(produced_at));
         } else if (produced_at < (time(NULL) - (3600 * 24 * 4))) {
-            fprintf(stderr, "%s The OCSP Response indicates to be produced more then 4 days ago on: %s UTC/Zulu\n",
+            fprintf(stdout, "%s The OCSP Response indicates to be produced more then 4 days ago on: %s UTC/Zulu\n",
                             MSG_WARNING, convert_time_t_to_utc_time_string(produced_at));
         } else {
-            fprintf(stderr, "%s The OCSP Response indicates to be newer then 4 days on: %s UTC/Zulu\n",
+            fprintf(stdout, "%s The OCSP Response indicates to be newer then 4 days on: %s UTC/Zulu\n",
                             MSG_OK, convert_time_t_to_utc_time_string(produced_at));
         }
         free(tmp);
@@ -1261,19 +1262,19 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         single = sk_OCSP_SINGLERESP_value(rd->responses, i);
         if (!single) {
             /* Or not really...? */
-            fprintf(stderr, "%s OCSP Single Response %d of %d is empty/non-existent. Trying next (if available)\n",
+            fprintf(stdout, "%s OCSP Single Response %d of %d is empty/non-existent. Trying next (if available)\n",
                             MSG_WARNING, i, sk_OCSP_SINGLERESP_num(rd->responses));
         }
 
         /* TODO : fix leaks ! */
         cid = single->certId;
         if (!cid) {
-            fprintf(stderr, "%s Malformed Response: No Certificate ID found\n", MSG_ERROR);
+            fprintf(stdout, "%s Malformed Response: No Certificate ID found\n", MSG_ERROR);
             return;
         }
 
         tmp = ASN1_OBJECT_to_buffer(cid->hashAlgorithm->algorithm);
-        fprintf(stderr, "%s Cert ID: Hash Algorithm: %s, Issuer Name Hash: %s, Issuer Key Hash: %s, Serial Number: %s\n",
+        fprintf(stdout, "%s Cert ID: Hash Algorithm: %s, Issuer Name Hash: %s, Issuer Key Hash: %s, Serial Number: %s\n",
                         MSG_BLANK,
                         tmp,
                         ASN1_STRING_data(cid->issuerNameHash),
@@ -1283,15 +1284,15 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
 
         cst = single->certStatus;
         if (!cst) {
-            fprintf(stderr, "%s Malformed Response: No Certificate Status found\n", MSG_ERROR);
+            fprintf(stdout, "%s Malformed Response: No Certificate Status found\n", MSG_ERROR);
             return;
         }
         switch (cst->type) {
             case V_OCSP_CERTSTATUS_GOOD :
-                fprintf(stderr, "%s Certificate Status: %s\n", MSG_OK, COLOR(MAKE_GREEN, "good"));
+                fprintf(stdout, "%s Certificate Status: %s\n", MSG_OK, COLOR(MAKE_GREEN, "good"));
                 break;
             case V_OCSP_CERTSTATUS_REVOKED :
-                fprintf(stderr, "%s Certificate Status: %s\n", MSG_ERROR, COLOR(MAKE_I_RED, "revoked"));
+                fprintf(stdout, "%s Certificate Status: %s\n", MSG_ERROR, COLOR(MAKE_I_RED, "revoked"));
 
                 rev = cst->value.revoked;
                 if (rev) {
@@ -1299,43 +1300,43 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                     revoked_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
                     free(u_tmp);
                     tmp = convert_time_t_to_utc_time_string(revoked_at);
-                    fprintf(stderr, "%s Revocation time: %s\n", MSG_BLANK, tmp);
+                    fprintf(stdout, "%s Revocation time: %s\n", MSG_BLANK, tmp);
                     free(tmp);
 
                     if (rev->revocationReason) {
                         l = ASN1_ENUMERATED_get(rev->revocationReason);
-                        fprintf(stderr, "%s Revocation reason: %s\n", MSG_BLANK, OCSP_crl_reason_str(l));
+                        fprintf(stdout, "%s Revocation reason: %s\n", MSG_BLANK, OCSP_crl_reason_str(l));
                     }
                 }
                 break;
             case V_OCSP_CERTSTATUS_UNKNOWN :
-                fprintf(stderr, "%s Certificate Status: %s\n", MSG_ERROR, COLOR(MAKE_RED, "unknown"));
+                fprintf(stdout, "%s Certificate Status: %s\n", MSG_ERROR, COLOR(MAKE_RED, "unknown"));
                 break;
             default:
-                fprintf(stderr, "%s Malformed certificate status found of value: %d\n", MSG_ERROR, cst->type);
+                fprintf(stdout, "%s Malformed certificate status found of value: %d\n", MSG_ERROR, cst->type);
                 break;
 
         }
 
         if (!single->thisUpdate) {
-            fprintf(stderr, "%s Malformed OSCP Response, no This Update field found\n", MSG_ERROR);
+            fprintf(stdout, "%s Malformed OSCP Response, no This Update field found\n", MSG_ERROR);
         } else {
             u_tmp = ASN1_STRING_data(single->thisUpdate);
             t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
             free(u_tmp);
             tmp = convert_time_t_to_utc_time_string(t);
-            fprintf(stderr, "%s This update: %s\n", MSG_BLANK, tmp);
+            fprintf(stdout, "%s This update: %s\n", MSG_BLANK, tmp);
             free(tmp);
         }
 
         if (!single->thisUpdate) {
-            fprintf(stderr, "%s No Next Update field found\n", MSG_WARNING);
+            fprintf(stdout, "%s No Next Update field found\n", MSG_WARNING);
         } else {
             u_tmp = ASN1_STRING_data(single->nextUpdate);
             t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
             free(u_tmp);
             tmp = convert_time_t_to_utc_time_string(t);
-            fprintf(stderr, "%s Next update: %s\n", MSG_BLANK, tmp);
+            fprintf(stdout, "%s Next update: %s\n", MSG_BLANK, tmp);
             free(tmp);
         }
 #if 0
@@ -1348,7 +1349,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
     }
 
     /* Debug cut off hack */
-    fprintf(stderr, "%s Response contains %d certificates\n", MSG_BLANK, sk_X509_num(br->certs));
+    fprintf(stdout, "%s Response contains %d certificates\n", MSG_BLANK, sk_X509_num(br->certs));
     /* OCSP_BASICRESP_free(br); */
     return;
 #if 0
@@ -1381,19 +1382,19 @@ diagnose_conn_info(struct sslconn *conn) {
     if (!conn)
         return;
 
-    fprintf(stderr, MAKE_LIGHT_BLUE "=== Diagnoses ===" RESET_COLOR "\n");
+    fprintf(stdout, MAKE_LIGHT_BLUE "=== Diagnoses ===" RESET_COLOR "\n");
 
     ssl_verify_result = SSL_get_verify_result(conn->ssl);
     switch (ssl_verify_result) {
         case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
         case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-            fprintf(stderr, "%s SSL certificate is self signed\n", MSG_ERROR);
+            fprintf(stdout, "%s SSL certificate is self signed\n", MSG_ERROR);
             break;
         case X509_V_OK:
-            fprintf(stderr, "%s SSL certificate verification passed\n", MSG_OK);
+            fprintf(stdout, "%s SSL certificate verification passed\n", MSG_OK);
             break;
         default:
-            fprintf(stderr, "%s SSL certification verification error: %d\n",
+            fprintf(stdout, "%s SSL certification verification error: %d\n",
                             MSG_ERROR,
                             ssl_verify_result);
     }
@@ -1432,17 +1433,17 @@ diagnose_conn_info(struct sslconn *conn) {
     if (conn->diagnostics) {
         /* Certificate stack details */
         if (conn->diagnostics->found_root_ca_in_stack) {
-            fprintf(stderr, "%s Server configuration error, a Root CA was "\
+            fprintf(stdout, "%s Server configuration error, a Root CA was "\
                             "sent by the service. SSL stack must ignore this certificate.\n",
                             MSG_WARNING);
         }
         if (conn->diagnostics->peer_has_ca_true) {
-            fprintf(stderr, "%s The peer/host certificate has the CA:True setting in "\
+            fprintf(stdout, "%s The peer/host certificate has the CA:True setting in "\
                             "the certificate. This makes no sense.\n",
                             MSG_ERROR);
         }
         if (conn->diagnostics->peer_uses_selfsigned) {
-            fprintf(stderr, "%s The peer/host certificate uses a self-signed certificate. "\
+            fprintf(stdout, "%s The peer/host certificate uses a self-signed certificate. "\
                             "Establishing trust is impossible\n",
                             MSG_ERROR);
         }
@@ -1453,17 +1454,17 @@ diagnose_conn_info(struct sslconn *conn) {
      * Or bypass all and check something else known. (Not implemented yet) */
     if (peer_certinfo) {
         if (TAILQ_EMPTY(&(peer_certinfo->san_head))) {
-            fprintf(stderr, "%s RFC2818 check: Peer certificate is a legacy "\
+            fprintf(stdout, "%s RFC2818 check: Peer certificate is a legacy "\
                             "certificate as it features no Subject Alt Names\n",
                             MSG_WARNING);
 
             /* Check Common Name */
             if (!strcasecmp(peer_certinfo->commonname, conn->host_ip)) {
-                fprintf(stderr, "%s RFC2818 check: legacy peer certificate "\
+                fprintf(stdout, "%s RFC2818 check: legacy peer certificate "\
                                 "matched most significant Common Name.\n",
                                 MSG_OK);
             } else {
-                fprintf(stderr, "%s RFC2818 check failed: legacy peer certificate's "\
+                fprintf(stdout, "%s RFC2818 check failed: legacy peer certificate's "\
                                 "most significant Common Name did not match the "\
                                 "Hostname or IP address of the server. Untrusted "\
                                 "connection.\n",
@@ -1473,7 +1474,7 @@ diagnose_conn_info(struct sslconn *conn) {
             /* Check SAN */
             for (p_san = TAILQ_FIRST(&(peer_certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
                 if (!strcasecmp(p_san->value, conn->host_ip)) {
-                    fprintf(stderr, "%s RFC2818 check: peer certificate matched "\
+                    fprintf(stdout, "%s RFC2818 check: peer certificate matched "\
                                     "Subject Alt Name\n",
                                     MSG_OK);
                     found_san = 1;
@@ -1481,7 +1482,7 @@ diagnose_conn_info(struct sslconn *conn) {
                 tmp_p_san = TAILQ_NEXT(p_san, entries);
             }
             if (!found_san) {
-                fprintf(stderr, "%s RFC2818 check failed: Peer certificate has "\
+                fprintf(stdout, "%s RFC2818 check failed: Peer certificate has "\
                                 "Subject Alt Names, but none match the "\
                                 "Hostname or IP address of the server. "\
                                 "Untrusted connection.\n",
@@ -1496,7 +1497,7 @@ diagnose_conn_info(struct sslconn *conn) {
     } else {
         for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
             if (certinfo->bits < 1024) {
-                fprintf(stderr, "%s The certificate with Subject DN \"%s\" is a small and weak "\
+                fprintf(stdout, "%s The certificate with Subject DN \"%s\" is a small and weak "\
                                 "public key length of \'%d\' bits. This is really really bad. "\
                                 "This means the security of the certificate can be easily "\
                                 "broken with a fast enough computer. Advise: replace it NOW "\
@@ -1506,7 +1507,7 @@ diagnose_conn_info(struct sslconn *conn) {
                                 certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>",
                                 certinfo->bits);
             } else if (certinfo->bits < 1400) {
-                fprintf(stderr, "%s The certificate with Subject DN \"%s\" has a weak public "\
+                fprintf(stdout, "%s The certificate with Subject DN \"%s\" has a weak public "\
                                 "key length of \'%d\' bits. This means the security of the "\
                                 "certificate can be broken with a fast enough computer. "\
                                 "Advise: replace it with a higher quality certificate of at "\
@@ -1515,7 +1516,7 @@ diagnose_conn_info(struct sslconn *conn) {
                                 certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>",
                                 certinfo->bits);
             } else if (certinfo->bits >= 1400) {
-                fprintf(stderr, "%s The certificate with Subject DN \"%s\" has a strong public "\
+                fprintf(stdout, "%s The certificate with Subject DN \"%s\" has a strong public "\
                                 "key length of \'%d\' bits.\n",
                                 MSG_OK,
                                 certinfo->subject_dn ? certinfo->subject_dn : "<No Subject DN>",
@@ -1613,7 +1614,8 @@ connect_to_serv_port(char *servername,
                      char *passphrase,
                      char *sni,
                      char *dumpdir,
-                     int noverify) {
+                     int noverify,
+                     int quiet) {
     struct sslconn *conn;
 
     fprintf(stderr, "%s\n", __func__);
@@ -1707,6 +1709,7 @@ usage(void) {
     printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
     printf("\t--dumpdir <dir where all certs and info will be dumped>\n");
     printf("\t--noverify (mute the verification callback, always 'ok')\n");
+    printf("\t--quiet (just mute)\n");
     printf("\n");
 
     return;
@@ -1715,7 +1718,7 @@ usage(void) {
 
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
-    int sslversion = 10, noverify = 0;
+    int sslversion = 10, noverify = 0, quiet = 0;
     int ipversion = PF_UNSPEC; /* System preference is leading */
     char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL, *dumpdir = NULL;
     unsigned short port = 443; /* default HTTPS port number */
@@ -1740,7 +1743,8 @@ int main(int argc, char *argv[]) {
         {"key",         required_argument, 0, 'k'},
         {"passphrase",  required_argument, 0, 'w'},
         {"dumpdir",     required_argument, 0, 'q'},
-        {"noverify",    no_argument,       0, 'N'}
+        {"noverify",    no_argument,       0, 'N'},
+        {"quiet",       no_argument,       0, 'Q'}
     };
 
     opterr = 0;
@@ -1778,8 +1782,10 @@ int main(int argc, char *argv[]) {
                 sslversion = 12;
                 break;
             case 'N':
-                printf("Enabled!\n");
                 noverify = 1;
+                break;
+            case 'Q':
+                quiet = 1;
                 break;
             case 's':
                 if (optarg)
@@ -1886,6 +1892,7 @@ int main(int argc, char *argv[]) {
                                 cert, key, passphrase,
                                 sni,
                                 dumpdir,
-                                noverify);
+                                noverify,
+                                quiet);
 }
 
