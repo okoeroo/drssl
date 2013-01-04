@@ -118,6 +118,7 @@ struct sslconn {
     char *dumpdir;
     int   noverify;
     int   quiet;
+    int   timeout;
 
     /* struct certinfo *certinfo; */
     struct diagnostics *diagnostics;
@@ -156,7 +157,7 @@ int connect_to_serv_port(char *servername, unsigned short servport,
                          char *cafile, char *capath,
                          char *cert, char *key, char *passphrase,
                          char *sni, char *dumpdir,
-                         int noverify, int quiet);
+                         int noverify, int quiet, int timeout);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
@@ -573,7 +574,7 @@ connect_bio_to_serv_port(struct sslconn *conn) {
     if (!conn || !conn->host_ip)
         return -1;
 
-    if (create_client_socket (&sock, conn->host_ip, conn->port, conn->ipversion, 30*1000) != 0) {
+    if (create_client_socket (&sock, conn->host_ip, conn->port, conn->ipversion, conn->timeout * 1000) != 0) {
         fprintf(stderr, "Error: failed to connect to \"%s\" on port \'%d\'\n",
                         conn->host_ip, conn->port);
         return -2;
@@ -1614,7 +1615,8 @@ connect_to_serv_port(char *servername,
                      char *sni,
                      char *dumpdir,
                      int noverify,
-                     int quiet) {
+                     int quiet,
+                     int timeout) {
     struct sslconn *conn;
 
     if (!quiet) fprintf(stderr, "%s\n", __func__);
@@ -1642,6 +1644,7 @@ connect_to_serv_port(char *servername,
     conn->dumpdir     = dumpdir;
     conn->noverify    = noverify;
     conn->quiet       = quiet;
+    conn->timeout     = timeout;
 
     /* Create SSL context */
     if (setup_client_ctx(conn) < 0) {
@@ -1713,6 +1716,7 @@ usage(void) {
     printf("\t--dumpdir <dir where all certs and info will be dumped>\n");
     printf("\t--noverify (mute the verification callback, always 'ok')\n");
     printf("\t--quiet (just mute)\n");
+    printf("\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
     printf("\n");
 
     return;
@@ -1721,9 +1725,9 @@ usage(void) {
 
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
-    int sslversion = 10, noverify = 0, quiet = 0;
+    int sslversion = 10, noverify = 0, quiet = 0, timeout = 30;
     int ipversion = PF_UNSPEC; /* System preference is leading */
-    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL, *dumpdir = NULL;
+    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL, *dumpdir = NULL, *timeout_s = NULL;
     unsigned short port = 443; /* default HTTPS port number */
     long port_l = 0;
 
@@ -1746,6 +1750,7 @@ int main(int argc, char *argv[]) {
         {"key",         required_argument, 0, 'k'},
         {"passphrase",  required_argument, 0, 'w'},
         {"dumpdir",     required_argument, 0, 'q'},
+        {"timeout",     required_argument, 0, 't'},
         {"noverify",    no_argument,       0, 'N'},
         {"quiet",       no_argument,       0, 'Q'}
     };
@@ -1868,6 +1873,19 @@ int main(int argc, char *argv[]) {
                     usage();
                 }
                 break;
+            case 't':
+                if (optarg) {
+                    timeout_s = optarg;
+                    timeout = strtol(timeout_s, NULL, 10);
+                    if (timeout == 0) {
+                        fprintf(stderr, "Error: can't convert input\n");
+                        usage();
+                    }
+                } else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
             case '?':
                 fprintf(stderr, "Unknown option %s", optarg);
                 break;
@@ -1896,6 +1914,7 @@ int main(int argc, char *argv[]) {
                                 sni,
                                 dumpdir,
                                 noverify,
-                                quiet);
+                                quiet,
+                                timeout);
 }
 
