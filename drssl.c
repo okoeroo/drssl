@@ -8,6 +8,8 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <getopt.h>
+#include <sys/stat.h>
+#include <sys/syslimits.h>
 
 #include <netdb.h>
 #include <netinet/in.h>
@@ -113,6 +115,9 @@ struct sslconn {
     char *clientkey;
     char *clientpass;
 
+    char *dumpdir;
+    int   noverify;
+
     /* struct certinfo *certinfo; */
     struct diagnostics *diagnostics;
     TAILQ_HEAD(, certinfo) certinfo_head;
@@ -126,6 +131,7 @@ int x509IsCA(X509 *cert);
 #if OPENSSL_VERSION_NUMBER >= 0x10000000L
 static int ocsp_resp_cb(SSL *s, void *arg);
 #endif
+static int no_verify_callback(int ok, X509_STORE_CTX *store_ctx);
 static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
 int setup_client_ctx(struct sslconn *conn);
 int create_client_socket (int * client_socket, const char * server,
@@ -142,12 +148,13 @@ int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
 void display_certinfo(struct certinfo *certinfo);
 void display_conn_info(struct sslconn *conn);
 void diagnose_conn_info(struct sslconn *conn);
+void dump_to_disk(struct sslconn *conn);
 int connect_to_serv_port(char *servername, unsigned short servport,
                          int ipversion,
                          unsigned short sslversion,
                          char *cafile, char *capath,
                          char *cert, char *key, char *passphrase,
-                         char *sni);
+                         char *sni, char *dumpdir, int noverify);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
@@ -329,6 +336,13 @@ ocsp_resp_cb(SSL *s, void *arg) {
 }
 #endif /* OPENSSL_VERSION_NUMBER >= 0x10000000L */
 
+
+/* Custom NO verification callback */
+static int
+no_verify_callback(int ok, X509_STORE_CTX *store_ctx) {
+    return 1; /* All ok, move along now... */
+}
+
 /* Custom verification callback */
 static int
 verify_callback(int ok, X509_STORE_CTX *store_ctx) {
@@ -453,7 +467,11 @@ setup_client_ctx(struct sslconn *conn) {
     }
 
     /* Set custom callback */
-    SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
+    if (conn->noverify) {
+        SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_NONE, no_verify_callback);
+    } else {
+        SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
+    }
 
 	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
 		/* Set up OCSP Stapling callback setup */
@@ -827,7 +845,7 @@ extract_peer_certinfo(struct sslconn *conn) {
         for (i = 0; i < depth; i++) {
             /* De-dup */
             if (find_X509_in_certinfo_tail(conn, sk_X509_value(stack, i))) {
-                fprintf(stderr, "Discard certificate alrady captured\n");
+                fprintf(stderr, "Discard certificate already captured\n");
                 continue;
             }
 
@@ -1517,6 +1535,72 @@ diagnose_conn_info(struct sslconn *conn) {
     return;
 }
 
+void
+dump_to_disk(struct sslconn *conn) {
+    struct stat      st;
+    struct certinfo *certinfo, *tmp_certinfo;
+    char            *path = NULL;
+    int              i = 0;
+    FILE            *fp;
+
+    /* Got certificate related information? */
+    if (TAILQ_EMPTY(&(conn->certinfo_head))) {
+        fprintf(stderr, "Error: No peer certificate received\n");
+        return;
+    }
+
+    /* Stat() dumpdir */
+    if (stat(conn->dumpdir, &st) < 0) {
+        fprintf(stderr, "Error: can't stat() the dumpdir \"%s\", error: %s\n",
+                        conn->dumpdir,
+                        strerror(errno));
+        return;
+    }
+
+    /* Must be a directory */
+    if (!S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "Error: dumpdir value \"%s\" is not a directory\n",
+                        conn->dumpdir);
+        return;
+    }
+
+    path = malloc(PATH_MAX);
+    if (!path) {
+        fprintf(stderr, "Error: out of memory\n");
+        return;
+    }
+
+    for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+        snprintf(path, PATH_MAX, "%s/cert.pem.%d", conn->dumpdir, i);
+
+        fp = fopen(path, "w");
+        if (!fp) {
+            fprintf(stderr, "Error: can't fopen() file \"%s\", error: %s\n",
+                            path,
+                            strerror(errno));
+            goto final;
+        }
+
+        /* Record the peer certificate */
+        if (PEM_write_X509(fp, certinfo->cert) != 1) {
+            fprintf(stderr, "Error: failed to write data with PEM_write_X509() to file \"%s\", error: %s\n",
+                            path,
+                            strerror(errno));
+            fclose(fp);
+            goto final;
+        }
+        fclose(fp);
+
+        /* Next */
+        i++;
+        tmp_certinfo = TAILQ_NEXT(certinfo, entries);
+    }
+
+final:
+    free(path);
+    return;
+}
+
 int
 connect_to_serv_port(char *servername,
                      unsigned short servport,
@@ -1527,7 +1611,9 @@ connect_to_serv_port(char *servername,
                      char *cert,
                      char *key,
                      char *passphrase,
-                     char *sni) {
+                     char *sni,
+                     char *dumpdir,
+                     int noverify) {
     struct sslconn *conn;
 
     fprintf(stderr, "%s\n", __func__);
@@ -1552,6 +1638,8 @@ connect_to_serv_port(char *servername,
     conn->clientkey   = key;
     conn->clientpass  = passphrase;
     conn->sni         = sni;
+    conn->dumpdir     = dumpdir;
+    conn->noverify    = noverify;
 
     /* Create SSL context */
     if (setup_client_ctx(conn) < 0) {
@@ -1574,11 +1662,16 @@ connect_to_serv_port(char *servername,
         return -5;
     }
 
-    /* Display / Show the information we gathered */
-    display_conn_info(conn);
+    if (conn->dumpdir) {
+        /* Dump all information as files into a directory */
+        dump_to_disk(conn);
+    } else {
+        /* Display / Show the information we gathered */
+        display_conn_info(conn);
 
-    /* Display / Show the information we gathered */
-    diagnose_conn_info(conn);
+        /* Display / Show the information we gathered */
+        diagnose_conn_info(conn);
+    }
 
     fprintf(stderr, "SSL Shutting down.\n");
     SSL_shutdown(conn->ssl);
@@ -1612,6 +1705,8 @@ usage(void) {
     printf("\t--key <path to client private key file>\n");
     printf("\t--passphrase <passphrase to unlock the client private key file>\n");
     printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
+    printf("\t--dumpdir <dir where all certs and info will be dumped>\n");
+    printf("\t--noverify (mute the verification callback, always 'ok')\n");
     printf("\n");
 
     return;
@@ -1620,9 +1715,9 @@ usage(void) {
 
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
-    int sslversion = 10;
+    int sslversion = 10, noverify = 0;
     int ipversion = PF_UNSPEC; /* System preference is leading */
-    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL;
+    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL, *dumpdir = NULL;
     unsigned short port = 443; /* default HTTPS port number */
     long port_l = 0;
 
@@ -1643,7 +1738,9 @@ int main(int argc, char *argv[]) {
         {"capath" ,     required_argument, 0, 'P'},
         {"cert",        required_argument, 0, 'c'},
         {"key",         required_argument, 0, 'k'},
-        {"passphrase",  required_argument, 0, 'w'}
+        {"passphrase",  required_argument, 0, 'w'},
+        {"dumpdir",     required_argument, 0, 'q'},
+        {"noverify",    no_argument,       0, 'N'}
     };
 
     opterr = 0;
@@ -1679,6 +1776,10 @@ int main(int argc, char *argv[]) {
                 break;
             case 'C':
                 sslversion = 12;
+                break;
+            case 'N':
+                printf("Enabled!\n");
+                noverify = 1;
                 break;
             case 's':
                 if (optarg)
@@ -1750,6 +1851,14 @@ int main(int argc, char *argv[]) {
                     usage();
                 }
                 break;
+            case 'q':
+                if (optarg)
+                    dumpdir = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
             case '?':
                 fprintf(stderr, "Unknown option %s", optarg);
                 break;
@@ -1775,6 +1884,8 @@ int main(int argc, char *argv[]) {
                                 ipversion, sslversion,
                                 cafile, capath,
                                 cert, key, passphrase,
-                                sni);
+                                sni,
+                                dumpdir,
+                                noverify);
 }
 
