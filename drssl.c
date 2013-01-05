@@ -10,6 +10,8 @@
 #include <getopt.h>
 #include <sys/stat.h>
 #include <sys/syslimits.h>
+#include <sys/select.h>
+#include <fcntl.h>
 
 #include <netdb.h>
 #include <netinet/in.h>
@@ -476,11 +478,11 @@ setup_client_ctx(struct sslconn *conn) {
         SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
     }
 
-	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
-		/* Set up OCSP Stapling callback setup */
-		SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
-		SSL_CTX_set_tlsext_status_arg(conn->ctx, conn);
-	#endif
+#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+    /* Set up OCSP Stapling callback setup */
+    SSL_CTX_set_tlsext_status_cb(conn->ctx, ocsp_resp_cb);
+    SSL_CTX_set_tlsext_status_arg(conn->ctx, conn);
+#endif
 
     return 0;
 }
@@ -497,12 +499,12 @@ create_client_socket (int * client_socket,
     int              rc;
     int              mysock = -1;
     char             portstr[24];
+    fd_set           fdset;
+    int              so_error;
+    socklen_t        so_error_len = sizeof so_error;
+    struct timeval   wait_tv;
 
-    struct timeval  *wait_tv = NULL;
-    struct timeval   preset_tv;
-    unsigned int     preset_tvlen = sizeof preset_tv;
-
-
+    FD_ZERO(&fdset);
     memset(&hints, 0, sizeof(struct addrinfo));
 
     hints.ai_socktype = SOCK_STREAM;
@@ -517,45 +519,35 @@ create_client_socket (int * client_socket,
         return 1;
     }
 
-
     /* Create new socket */
     if ((mysock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
         fprintf(stderr, "Error: Failed to create socket\n");
         return 1;
     }
 
-
-    /* Grab timeout setting */
-    if (getsockopt(mysock, SOL_SOCKET, SO_RCVTIMEO,
-                   (char *)&preset_tv, &preset_tvlen) < 0) {
-        fprintf(stderr, "Error: Failed to get the timeout setting\n");
-        return 1;
-    }
-
-
     /* Set connection timeout on the socket */
-    wait_tv = (struct timeval *) malloc (sizeof (struct timeval));
-    wait_tv->tv_sec = (time_out_milliseconds - (time_out_milliseconds % 1000)) / 1000;
-    wait_tv->tv_usec = (time_out_milliseconds % 1000) * 1000;
-    if (setsockopt(mysock, SOL_SOCKET, SO_RCVTIMEO,
-                   (char *)wait_tv, sizeof *wait_tv) < 0) {
-        fprintf(stderr, "Error: Failed to set the timeout setting\n");
-        return 1;
-    }
-    free (wait_tv);
-    wait_tv = NULL;
+    wait_tv.tv_sec  = (time_out_milliseconds - (time_out_milliseconds % 1000)) / 1000;
+    wait_tv.tv_usec = (time_out_milliseconds % 1000) * 1000;
 
+    /* Set to non-block, connect() output can be ignored */
+    fcntl(mysock, F_SETFL, O_NONBLOCK);
 
     /* Connecting socket to host on port with timeout */
-    if (connect(mysock, res -> ai_addr, res -> ai_addrlen) < 0) {
-        fprintf(stderr, "Failed to connect\n");
-        return 1;
-    } else {
-        /* Socket is succesfuly connected */
-        setsockopt (mysock, SOL_SOCKET, SO_KEEPALIVE, 0, 0);
+    connect(mysock, res -> ai_addr, res -> ai_addrlen);
 
-        *client_socket = mysock;
-        return 0;
+    FD_SET(mysock, &fdset);
+
+    if (select(mysock + 1, NULL, &fdset, NULL, &wait_tv) == 1) {
+        getsockopt(mysock, SOL_SOCKET, SO_ERROR, &so_error, &so_error_len);
+
+        if (so_error == 0) {
+            /* Socket is succesfuly connected */
+            fcntl(mysock, F_SETFL, fcntl(mysock, F_GETFL) & ~O_NONBLOCK);
+            setsockopt (mysock, SOL_SOCKET, SO_KEEPALIVE, 0, 0);
+
+            *client_socket = mysock;
+            return 0;
+        }
     }
 
     /* Failure */
