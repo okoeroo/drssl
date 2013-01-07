@@ -1785,6 +1785,7 @@ usage(void) {
     printf("\t--noverify (mute the verification callback, always 'ok')\n");
     printf("\t--quiet (just mute)\n");
     printf("\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
+    printf("\t--force-dump (creates dump directory if it doesn't exist yet)\n");
     printf("\n");
 
     return;
