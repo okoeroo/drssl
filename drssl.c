@@ -118,6 +118,7 @@ struct sslconn {
     char *clientpass;
 
     char *dumpdir;
+    int   forcedumpdir;
     int   noverify;
     int   quiet;
     int   timeout;
@@ -158,7 +159,7 @@ int connect_to_serv_port(char *servername, unsigned short servport,
                          unsigned short sslversion,
                          char *cafile, char *capath,
                          char *cert, char *key, char *passphrase,
-                         char *sni, char *dumpdir,
+                         char *sni, char *dumpdir, int forcedumpdir,
                          int noverify, int quiet, int timeout);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
@@ -169,6 +170,7 @@ time_t grid_asn1TimeToTimeT(unsigned char *asn1time, size_t len);
 time_t my_timegm(struct tm *tm);
 char *convert_time_t_to_utc_time_string(time_t t);
 char *ASN1_OBJECT_to_buffer(ASN1_OBJECT *a);
+int cgul_mkdir_with_parents(const char *absolutedir, mode_t mode);
 
 
 /* Functions */
@@ -1528,6 +1530,63 @@ diagnose_conn_info(struct sslconn *conn) {
     return;
 }
 
+
+/**
+ * Author/source: Mischa Salle, gLExec (Apache2 Licence)
+ *
+ * Behaviour as mkdir -p: create parents where needed.
+ * Return values:
+ *  0: success
+ *  -1: I/O error, e.g. a component is not a dir, not accessible, etc.
+ *  -3: absolutedir is not absolute (does not start with '/')
+ *  -4: out of memory
+ */
+int cgul_mkdir_with_parents(const char *absolutedir, mode_t mode)  {
+    int rc;
+    mode_t oldumask;
+    char *dir,*pos;
+    struct stat dir_stat;
+
+    if (absolutedir[0]!='/') /* need absolute path */
+        return -3;
+    /* make copy for local usage */
+    if ( (dir=strdup(absolutedir))==NULL )
+        return -4; /* out of memory */
+
+    /* pos will 'loop' over all the '/' except the leading one */
+    pos=dir;
+    /* Enforce mode as the creation mode, even when umask is more permissive */
+    oldumask=umask(~mode);
+    do {
+        /* Setup the next path component */
+        pos=strchr(&(pos[1]),'/');
+        if (pos!=NULL) pos[0]='\0';
+        /* First check if dir exists: needed for automount */
+        if ((rc=stat(dir,&dir_stat)))    { /* stat failed: rc now -1 */
+            /* Check if it is due to non-existing component */
+            if (errno==ENOENT)  { /* means doesn't exist (since dir!="") */
+                if ((rc=mkdir(dir,mode)))
+                    break;  /* rc==-1 from mkdir */
+            } else /* stat failed for other reason: error */
+                break;
+        } else { /* Check if existing component is a directory */
+            if (!S_ISDIR(dir_stat.st_mode)) {
+                rc=-1;
+                break;
+            }
+        }
+        if (pos==NULL) /* This was the last path component */
+            break;
+        /* Put the / back */
+        pos[0]='/';
+    } while ( 1 );
+    /* reset umask */
+    umask(oldumask);
+    /* Free memory and return */
+    free(dir);
+    return rc;
+}
+
 void
 dump_to_disk(struct sslconn *conn) {
     struct stat      st;
@@ -1544,10 +1603,25 @@ dump_to_disk(struct sslconn *conn) {
 
     /* Stat() dumpdir */
     if (stat(conn->dumpdir, &st) < 0) {
-        fprintf(stderr, "Error: can't stat() the dumpdir \"%s\", error: %s\n",
-                        conn->dumpdir,
-                        strerror(errno));
-        return;
+        if (!conn->forcedumpdir) {
+            fprintf(stderr, "Error: can't stat() the dumpdir \"%s\", error: %s\n",
+                            conn->dumpdir,
+                            strerror(errno));
+            return;
+        } else {
+            /* Create the directory like mkdir -p */
+            if (cgul_mkdir_with_parents(conn->dumpdir, 0755) < 0) {
+                fprintf(stderr, "Error: cgul_mkdir_with_parents() failed to create the directory \"%s\"\n",
+                                conn->dumpdir);
+                return;
+            }
+            if (stat(conn->dumpdir, &st) < 0) {
+                fprintf(stderr, "Error: can't stat() the dumpdir \"%s\", error: %s\n",
+                                conn->dumpdir,
+                                strerror(errno));
+                return;
+            }
+        }
     }
 
     /* Must be a directory */
@@ -1606,6 +1680,7 @@ connect_to_serv_port(char *servername,
                      char *passphrase,
                      char *sni,
                      char *dumpdir,
+                     int forcedumpdir,
                      int noverify,
                      int quiet,
                      int timeout) {
@@ -1623,20 +1698,21 @@ connect_to_serv_port(char *servername,
     if (conn == NULL)
         return -1;
 
-    conn->host_ip     = servername;
-    conn->port        = servport;
-    conn->ipversion   = ipversion;
-    conn->sslversion  = sslversion;
-    conn->cafile      = cafile;
-    conn->capath      = capath;
-    conn->clientcert  = cert;
-    conn->clientkey   = key;
-    conn->clientpass  = passphrase;
-    conn->sni         = sni;
-    conn->dumpdir     = dumpdir;
-    conn->noverify    = noverify;
-    conn->quiet       = quiet;
-    conn->timeout     = timeout;
+    conn->host_ip      = servername;
+    conn->port         = servport;
+    conn->ipversion    = ipversion;
+    conn->sslversion   = sslversion;
+    conn->cafile       = cafile;
+    conn->capath       = capath;
+    conn->clientcert   = cert;
+    conn->clientkey    = key;
+    conn->clientpass   = passphrase;
+    conn->sni          = sni;
+    conn->dumpdir      = dumpdir;
+    conn->noverify     = noverify;
+    conn->quiet        = quiet;
+    conn->timeout      = timeout;
+    conn->forcedumpdir = forcedumpdir;
 
     /* Create SSL context */
     if (setup_client_ctx(conn) < 0) {
@@ -1717,7 +1793,7 @@ usage(void) {
 
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
-    int sslversion = 10, noverify = 0, quiet = 0, timeout = 30;
+    int sslversion = 10, noverify = 0, quiet = 0, timeout = 30, forcedumpdir = 0;
     int ipversion = PF_UNSPEC; /* System preference is leading */
     char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL, *dumpdir = NULL, *timeout_s = NULL;
     unsigned short port = 443; /* default HTTPS port number */
@@ -1742,6 +1818,7 @@ int main(int argc, char *argv[]) {
         {"key",         required_argument, 0, 'k'},
         {"passphrase",  required_argument, 0, 'w'},
         {"dumpdir",     required_argument, 0, 'q'},
+        {"force-dump",  no_argument,       0, 'r'},
         {"timeout",     required_argument, 0, 't'},
         {"noverify",    no_argument,       0, 'N'},
         {"quiet",       no_argument,       0, 'Q'}
@@ -1786,6 +1863,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'Q':
                 quiet = 1;
+                break;
+            case 'r':
+                forcedumpdir = 1;
                 break;
             case 's':
                 if (optarg)
@@ -1905,6 +1985,7 @@ int main(int argc, char *argv[]) {
                                 cert, key, passphrase,
                                 sni,
                                 dumpdir,
+                                forcedumpdir,
                                 noverify,
                                 quiet,
                                 timeout);
