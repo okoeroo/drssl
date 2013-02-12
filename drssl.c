@@ -9,7 +9,7 @@
 #include <limits.h>
 #include <getopt.h>
 #include <sys/stat.h>
-#include <sys/syslimits.h>
+#include <limits.h>
 #include <sys/select.h>
 #include <fcntl.h>
 
