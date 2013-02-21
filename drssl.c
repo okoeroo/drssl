@@ -477,7 +477,10 @@ setup_client_ctx(struct sslconn *conn) {
     if (conn->noverify) {
         SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_NONE, no_verify_callback);
     } else {
-        SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback);
+        /* SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_PEER, verify_callback); */
+        /* Do not fail on the peer verification directly. Continue, and let the
+         * rest of the code conclude on the failure(s) */
+        SSL_CTX_set_verify(conn->ctx, SSL_VERIFY_NONE, verify_callback);
     }
 
 #if OPENSSL_VERSION_NUMBER >= 0x10000000L
@@ -1729,6 +1732,8 @@ connect_to_serv_port(char *servername,
         return -4;
     }
     if (!conn->quiet) fprintf(stderr, "SSL Connection opened\n");
+
+    printf("Do SSL_get_verify_result(). Result: %ld\n", SSL_get_verify_result(conn->ssl));
 
     /* Extract peer cert */
     if (extract_peer_certinfo(conn) < 0) {
