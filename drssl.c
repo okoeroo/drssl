@@ -51,6 +51,7 @@
 #define MSG_OK      ": " MAKE_GREEN  "ok                " RESET_COLOR ":"
 #define MSG_WARNING ": " MAKE_YELLOW "warning           " RESET_COLOR ":"
 #define MSG_ERROR   ": " MAKE_RED    "error             " RESET_COLOR ":"
+#define MSG_DEBUG   ": " MAKE_PURPLE "debug             " RESET_COLOR ":"
 #define MSG_BLANK   ":                   :"
 
 #define MALFORMED_ASN1_OBJECT MAKE_I_RED "<MALFORMED ASN1_OBJECT>" RESET_COLOR
@@ -323,16 +324,16 @@ ocsp_resp_cb(SSL *s, void *arg) {
 
     len = SSL_get_tlsext_status_ocsp_resp(s, &p);
     if (!p) {
-        fprintf(stderr, "no OCSP response sent\n");
+        fprintf(stderr, "%s no OCSP response sent\n", MSG_DEBUG);
         return 1;
     }
-    if (!conn->quiet) fprintf(stderr, "OCSP response: ");
+    if (!conn->quiet) fprintf(stderr, "%s OCSP response: ", MSG_DEBUG);
     rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
     if (!rsp) {
-        fprintf(stderr, "response parse error\n");
+        fprintf(stderr, "%s response parse error\n", MSG_WARNING);
         return 1;
     }
-    if (!conn->quiet) fprintf(stderr, "got stapled response\n");
+    if (!conn->quiet) fprintf(stderr, "%s got stapled response\n", MSG_DEBUG);
 
     /* Record stapled response */
     if (conn) {
@@ -355,18 +356,29 @@ static int
 verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     unsigned long   errnum   = X509_STORE_CTX_get_error(store_ctx);
     int             errdepth = X509_STORE_CTX_get_error_depth(store_ctx);
-    const char *    logstr = "verify_callback";
     char            subject[256];
     char            issuer[256];
+    SSL            *ssl;
+    struct sslconn *conn;
+
+
+    /* Retrieve the SSL object parenting the X509_STORE_CTX */
+    ssl = (SSL*)X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+    /* printf("callback pointer ssl: %d\n", (int)ssl); */
+
+    /* Retrieve the (struct sslconn *) object from the SSL object */
+    conn = SSL_get_app_data(ssl);
+    /* printf("callback pointer ssl->ex_data (conn): %d\n", (int)conn); */
+
 
     X509 *curr_cert = X509_STORE_CTX_get_current_cert(store_ctx);
 
-    fprintf(stderr, "%s: - Re-Verify certificate at depth: %i, pre-OK is: %d\n",
-                    logstr, errdepth, ok);
+    fprintf(stderr, "%s (%s) Re-Verify certificate at depth: %i, pre-OK is: %d\n",
+                    MSG_DEBUG, __func__, errdepth, ok);
     X509_NAME_oneline(X509_get_issuer_name(curr_cert), issuer, 256);
-    fprintf(stderr, "%s:   issuer   = %s\n", logstr, issuer);
+    fprintf(stderr, "%s (%s) - issuer   = %s\n", MSG_DEBUG, __func__, issuer);
     X509_NAME_oneline(X509_get_subject_name(curr_cert), subject, 256);
-    fprintf(stderr, "%s:   subject  = %s\n", logstr, subject);
+    fprintf(stderr, "%s (%s) - subject  = %s\n", MSG_DEBUG, __func__, subject);
 
     if (ok != 1) {
         switch (errnum) {
@@ -519,14 +531,14 @@ create_client_socket (int * client_socket,
     snprintf(portstr, 24, "%d", port);
     rc = getaddrinfo(server, &portstr[0], &hints, &res);
     if (rc != 0) {
-        fprintf(stderr, "Error: Failed to getaddrinfo (%s, %s, *, *)\n",
-                server, portstr);
+        fprintf(stderr, "%s Failed to getaddrinfo (%s, %s, *, *)\n",
+                MSG_ERROR, server, portstr);
         return 1;
     }
 
     /* Create new socket */
     if ((mysock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
-        fprintf(stderr, "Error: Failed to create socket\n");
+        fprintf(stderr, "%s Failed to create socket\n", MSG_ERROR);
         return 1;
     }
 
@@ -566,18 +578,18 @@ int
 connect_bio_to_serv_port(struct sslconn *conn) {
     int sock;
 
-    if (!conn->quiet) fprintf(stderr, "%s\n", __func__);
+    if (!conn->quiet) fprintf(stderr, "%s (%s) TCP/IP connect to host\n", MSG_DEBUG, __func__);
 
     if (!conn || !conn->host_ip)
         return -1;
 
     if (create_client_socket (&sock, conn->host_ip, conn->port, conn->ipversion, conn->timeout * 1000) != 0) {
-        fprintf(stderr, "Error: failed to connect to \"%s\" on port \'%d\'\n",
-                        conn->host_ip, conn->port);
+        fprintf(stderr, "%s failed to connect to \"%s\" on port \'%d\'\n",
+                        MSG_ERROR, conn->host_ip, conn->port);
         return -2;
     }
-    if (!conn->quiet) fprintf(stderr, "Connected to \"%s\" on port \'%d\'\n",
-                                      conn->host_ip, conn->port);
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Connected to \"%s\" on port \'%d\'\n",
+                                      MSG_DEBUG, __func__, conn->host_ip, conn->port);
     conn->sock = sock;
     return 0;
 }
@@ -585,7 +597,7 @@ connect_bio_to_serv_port(struct sslconn *conn) {
 /* Connect struct sslconn object using SSL over an existing BIO */
 int
 connect_ssl_over_socket(struct sslconn *conn) {
-    if (!conn->quiet) fprintf(stderr, "%s\n", __func__);
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Setup SSL session over the TCP/IP connection\n", MSG_DEBUG, __func__);
 
     if (!conn || !conn->host_ip || !conn->sock)
         return -1;
@@ -595,30 +607,34 @@ connect_ssl_over_socket(struct sslconn *conn) {
         return -2;
     }
 
-	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
-		/* Setup OCSP stapling on the SSL object */
-		SSL_set_tlsext_status_type(conn->ssl, TLSEXT_STATUSTYPE_ocsp);
-	#endif /* OPENSSL_VERSION_NUMBER >= 0x10000000L */
+    /* Record parent (struct sslconn *) object in SSL - used in callback */
+    SSL_set_app_data(conn->ssl, conn);
 
-	#if OPENSSL_VERSION_NUMBER >= 0x10000000L
-		/* Set TLS SNI (Server Name Indication) */
-		if (conn->sni && !SSL_set_tlsext_host_name(conn->ssl, conn->sni)) {
-			fprintf(stderr, "Unable to set TLS servername extension (SNI).\n");
-		}
-	#endif
+    #if OPENSSL_VERSION_NUMBER >= 0x10000000L
+    /* Setup OCSP stapling on the SSL object */
+    SSL_set_tlsext_status_type(conn->ssl, TLSEXT_STATUSTYPE_ocsp);
+    #endif /* OPENSSL_VERSION_NUMBER >= 0x10000000L */
+
+    #if OPENSSL_VERSION_NUMBER >= 0x10000000L
+    /* Set TLS SNI (Server Name Indication) */
+    if (conn->sni && !SSL_set_tlsext_host_name(conn->ssl, conn->sni)) {
+        fprintf(stderr, "%s Unable to set TLS servername extension (SNI).\n", MSG_WARNING);
+    }
+    #endif
 
     /* Connecting the Socket to the SSL layer */
     conn->bio = BIO_new_socket (conn->sock, BIO_NOCLOSE);
     if (!conn->bio) {
-        fprintf(stderr, "Error: Failed to tie the socket to a SSL BIO\n");
+        fprintf(stderr, "%s Error: Failed to tie the socket to a SSL BIO\n", MSG_ERROR);
         SSL_free(conn->ssl);
         return -3;
     }
-    if (!conn->quiet) fprintf(stderr, "BIO created from socket\n");
+    if (!conn->quiet) fprintf(stderr, "%s (%s) BIO created from socket\n", MSG_DEBUG, __func__);
 
     SSL_set_bio(conn->ssl, conn->bio, conn->bio);
     if (SSL_connect(conn->ssl) <= 0) {
-        fprintf(stderr, "Error connecting SSL\n");
+        fprintf(stderr, "%s (%s) Error connecting SSL\n", MSG_ERROR, __func__);
+        SSL_free(conn->ssl);
         return -4;
     }
 
@@ -642,7 +658,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
     void                    *ext_str = NULL;
     struct subjectaltname   *p_san;
 
-    if (!quiet) fprintf(stderr, "%s\n", __func__);
+    if (!quiet) fprintf(stderr, "%s (%s) Extract and register Subject Alt Names.\n", MSG_DEBUG, __func__);
 
     if (!certinfo || !certinfo->cert)
         return -1;
@@ -684,7 +700,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
                     /* Register the SAN */
                     p_san = malloc(sizeof(struct subjectaltname));
                     if (!p_san) {
-                        fprintf(stderr, "Error: out of memory\n");
+                        fprintf(stderr, "%s out of memory\n", MSG_ERROR);
                         return -10;
                     }
 
@@ -700,7 +716,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
 
                     p_san->value = strdup(nval->value);
                     if (!p_san->value) {
-                        fprintf(stderr, "Error: out of memory\n");
+                        fprintf(stderr, "%s out of memory\n", MSG_ERROR);
                         return -11;
                     }
 
@@ -722,21 +738,21 @@ extract_commonname(struct certinfo *certinfo, int quiet) {
     int cnt;
     char *cn;
 
-    if (!quiet) fprintf(stderr, "%s\n", __func__);
+    if (!quiet) fprintf(stderr, "%s (%s) Extract and register the Common Name\n", MSG_DEBUG, __func__);
 
     if (!certinfo || !certinfo->cert)
         return -1;
 
     subj = X509_get_subject_name(certinfo->cert);
     if (!subj) {
-        fprintf(stderr, "Error: could not extract the Subject DN\n");
+        fprintf(stderr, "%s could not extract the Subject DN\n", MSG_ERROR);
         return -2;
     }
 
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, NULL, 0);
     cn = malloc(cnt + 1);
     if (!cn) {
-        fprintf(stderr, "Error: out of memory\n");
+        fprintf(stderr, "%s out of memory\n", MSG_ERROR);
         return -3;
     }
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, cnt + 1);
@@ -809,19 +825,20 @@ extract_peer_certinfo(struct sslconn *conn) {
     if (!conn || !conn->ssl)
         return -1;
 
-    if (!conn->quiet) fprintf(stderr, "%s\n", __func__);
+    if (!conn->quiet)
+        fprintf(stderr, "%s (%s) Extract the certificates and register their information\n", MSG_DEBUG, __func__);
 
     /* Record peer certificate */
     peer = SSL_get_peer_certificate(conn->ssl);
     if (!peer) {
-        fprintf(stderr, "Error: No peer certificate found in SSL.\n");
+        fprintf(stderr, "%s No peer certificate found in SSL.\n", MSG_ERROR);
         conn->diagnostics->has_peer = 0;
         return -2;
     } else {
         conn->diagnostics->has_peer = 1;
         certinfo = create_certinfo();
         if (!certinfo) {
-            fprintf(stderr, "Error: Out of memory\n");
+            fprintf(stderr, "%s Out of memory\n", MSG_ERROR);
             return -3;
         }
         certinfo->cert = peer;
@@ -835,7 +852,7 @@ extract_peer_certinfo(struct sslconn *conn) {
      * not. Assume client side for now */
     stack = SSL_get_peer_cert_chain(conn->ssl);
     if (!stack) {
-        fprintf(stderr, "Error: No peer certificate stack found in SSL\n");
+        fprintf(stderr, "%s No peer certificate stack found in SSL\n", MSG_WARNING);
         conn->diagnostics->has_stack = 0;
     } else {
         conn->diagnostics->has_stack = 1;
@@ -843,13 +860,14 @@ extract_peer_certinfo(struct sslconn *conn) {
         for (i = 0; i < depth; i++) {
             /* De-dup */
             if (find_X509_in_certinfo_tail(conn, sk_X509_value(stack, i))) {
-                if (!conn->quiet) fprintf(stderr, "Discard certificate already captured\n");
+                if (!conn->quiet) fprintf(stderr, "%s (%s) Discard certificate already captured\n",
+                                          MSG_WARNING, __func__);
                 continue;
             }
 
             certinfo = create_certinfo();
             if (!certinfo) {
-                fprintf(stderr, "Error: Out of memory\n");
+                fprintf(stderr, "%s Out of memory\n", MSG_ERROR);
                 return -5;
             }
             certinfo->at_depth = i;
@@ -1381,6 +1399,7 @@ diagnose_conn_info(struct sslconn *conn) {
 
     fprintf(stdout, MAKE_LIGHT_BLUE "=== Diagnoses ===" RESET_COLOR "\n");
 
+    /* TODO: Get a chain/stack of errors */
     ssl_verify_result = SSL_get_verify_result(conn->ssl);
     switch (ssl_verify_result) {
         case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
@@ -1463,8 +1482,7 @@ diagnose_conn_info(struct sslconn *conn) {
             } else {
                 fprintf(stdout, "%s RFC2818 check failed: legacy peer certificate's "\
                                 "most significant Common Name did not match the "\
-                                "Hostname or IP address of the server. Untrusted "\
-                                "connection.\n",
+                                "Hostname or IP address of the server.\n",
                                 MSG_ERROR);
             }
         } else {
@@ -1689,14 +1707,13 @@ connect_to_serv_port(char *servername,
                      int timeout) {
     struct sslconn *conn;
 
-    if (!quiet) fprintf(stderr, "%s\n", __func__);
+    if (!quiet) fprintf(stderr, "%s (%s) Start sequence\n", MSG_DEBUG, __func__);
 
     if (!servername) {
         fprintf(stderr, "Error: no host specified\n");
         return -1;
     }
 
-    /* conn = calloc(sizeof(struct sslconn), 1); */
     conn = create_sslconn();
     if (conn == NULL)
         return -1;
@@ -1717,6 +1734,15 @@ connect_to_serv_port(char *servername,
     conn->timeout      = timeout;
     conn->forcedumpdir = forcedumpdir;
 
+    /* Early setup warnings */
+    if (!conn->cafile && !conn->capath) {
+        fprintf(stdout, "%s No --cafile or --capath was set. DrSSL has no way "\
+                        "of verifying the certificate chain. Unless OpenSSL is "\
+                        "patched to lookup in a default location, e.g. OSX' "\
+                        "KeyChain.app\n",
+                        MSG_WARNING);
+    }
+
     /* Create SSL context */
     if (setup_client_ctx(conn) < 0) {
         return -2;
@@ -1731,9 +1757,7 @@ connect_to_serv_port(char *servername,
     if (connect_ssl_over_socket(conn) < 0) {
         return -4;
     }
-    if (!conn->quiet) fprintf(stderr, "SSL Connection opened\n");
-
-    printf("Do SSL_get_verify_result(). Result: %ld\n", SSL_get_verify_result(conn->ssl));
+    if (!conn->quiet) fprintf(stderr, "%s (%s) SSL Connection opened\n", MSG_DEBUG, __func__);
 
     /* Extract peer cert */
     if (extract_peer_certinfo(conn) < 0) {
@@ -1748,15 +1772,16 @@ connect_to_serv_port(char *servername,
         /* Display / Show the information we gathered */
         diagnose_conn_info(conn);
     }
+    fprintf(stdout, MAKE_LIGHT_BLUE "===" RESET_COLOR "\n");
 
     if (conn->dumpdir) {
         /* Dump all information as files into a directory */
         dump_to_disk(conn);
     }
 
-    if (!conn->quiet) fprintf(stderr, "SSL Shutting down.\n");
+    if (!conn->quiet) fprintf(stderr, "%s (%s) SSL Shutting down.\n", MSG_DEBUG, __func__);
     SSL_shutdown(conn->ssl);
-    if (!conn->quiet) fprintf(stderr, "SSL Connection closed\n");
+    if (!conn->quiet) fprintf(stderr, "%s (%s) SSL Connection closed\n", MSG_DEBUG, __func__);
 
     SSL_clear(conn->ssl);
     SSL_free(conn->ssl);
