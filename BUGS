@@ -9,3 +9,4 @@ Limitations
 - Wildcard Subject Alt Names or commonname matching
 - OCSP & CRL checks to be added
 - Needs passphrase read-in routine
+- Microsoft specific Subject Alt Names give a "<unsupported>" string.

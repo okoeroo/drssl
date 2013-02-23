@@ -60,6 +60,18 @@
 
 
 /* Types */
+struct error_trace {
+    X509 *cert;
+    char *subject_dn;
+    char *issuer_dn;
+    int   pre_ok;
+    int   post_ok;
+    int   errnum;
+    int   errdepth;
+
+    TAILQ_ENTRY(error_trace) entries;
+};
+
 typedef enum san_type_e {
     NONE,
     DNS,
@@ -97,6 +109,8 @@ struct diagnostics {
     unsigned short   peer_uses_selfsigned;
     unsigned short   peer_has_ca_true;
     unsigned short   found_root_ca_in_stack;
+
+    TAILQ_HEAD(, error_trace) error_trace_head;
 };
 
 
@@ -154,6 +168,8 @@ int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
 void display_certinfo(struct certinfo *certinfo);
 void display_conn_info(struct sslconn *conn);
 void diagnose_conn_info(struct sslconn *conn);
+void diagnose_error_trace(struct sslconn *conn);
+void display_error_trace(struct sslconn *conn);
 void dump_to_disk(struct sslconn *conn);
 int connect_to_serv_port(char *servername, unsigned short servport,
                          int ipversion,
@@ -199,6 +215,7 @@ create_sslconn(void) {
         goto fail;
 
     TAILQ_INIT(&(conn->certinfo_head));
+    TAILQ_INIT(&(conn->diagnostics->error_trace_head));
     return conn;
 fail:
     return NULL;
@@ -299,7 +316,7 @@ convert_time_t_to_utc_time_string(time_t t) {
 
     buf = calloc(27, 1);
     if (!buf) {
-        fprintf(stderr, "Error: Out of memory\n");
+        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
         return NULL;
     }
 
@@ -354,32 +371,61 @@ no_verify_callback(int ok, X509_STORE_CTX *store_ctx) {
 /* Custom verification callback */
 static int
 verify_callback(int ok, X509_STORE_CTX *store_ctx) {
-    unsigned long   errnum   = X509_STORE_CTX_get_error(store_ctx);
-    int             errdepth = X509_STORE_CTX_get_error_depth(store_ctx);
-    char            subject[256];
-    char            issuer[256];
-    SSL            *ssl;
-    struct sslconn *conn;
+    unsigned long       errnum      = X509_STORE_CTX_get_error(store_ctx);
+    int                 errdepth    = X509_STORE_CTX_get_error_depth(store_ctx);
+    char               *subject     = NULL;
+    char               *issuer      = NULL;
+    X509               *curr_cert   = NULL;
+    SSL                *ssl         = NULL;
+    struct sslconn     *conn        = NULL;
+    struct error_trace *error_trace = NULL;
 
+    fprintf(stderr, "%s (%s) Re-Verify certificate at depth: %i, pre-OK is: %d (%s), errnum is: %lu, \"%s\"\n",
+                    MSG_DEBUG, __func__, errdepth, ok, ok ? MAKE_GREEN "OK" RESET_COLOR : MAKE_RED "BAD" RESET_COLOR,
+                    errnum, X509_verify_cert_error_string(errnum));
 
     /* Retrieve the SSL object parenting the X509_STORE_CTX */
     ssl = (SSL*)X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
-    /* printf("callback pointer ssl: %d\n", (int)ssl); */
+    if (ssl) {
+        /* Retrieve the (struct sslconn *) object from the SSL object */
+        conn = SSL_get_app_data(ssl);
+    }
 
-    /* Retrieve the (struct sslconn *) object from the SSL object */
-    conn = SSL_get_app_data(ssl);
-    /* printf("callback pointer ssl->ex_data (conn): %d\n", (int)conn); */
+    curr_cert = X509_STORE_CTX_get_current_cert(store_ctx);
+    if (curr_cert) {
+        issuer = X509_NAME_oneline(X509_get_issuer_name(curr_cert), NULL, 0);
+        fprintf(stderr, "%s (%s) - issuer   = %s\n", MSG_DEBUG, __func__, issuer);
+        subject = X509_NAME_oneline(X509_get_subject_name(curr_cert), NULL, 0);
+        fprintf(stderr, "%s (%s) - subject  = %s\n", MSG_DEBUG, __func__, subject);
+    }
 
+    if (!conn) {
+        free(issuer);
+        free(subject);
+    } else {
+        error_trace = calloc(sizeof(struct error_trace), 1);
+        if (!error_trace) {
+            fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+            free(issuer);
+            free(subject);
+            return 0; /* Return as a verification failure */
+        }
 
-    X509 *curr_cert = X509_STORE_CTX_get_current_cert(store_ctx);
+        if (curr_cert) {
+            error_trace->cert = X509_dup(curr_cert);
+        }
 
-    fprintf(stderr, "%s (%s) Re-Verify certificate at depth: %i, pre-OK is: %d\n",
-                    MSG_DEBUG, __func__, errdepth, ok);
-    X509_NAME_oneline(X509_get_issuer_name(curr_cert), issuer, 256);
-    fprintf(stderr, "%s (%s) - issuer   = %s\n", MSG_DEBUG, __func__, issuer);
-    X509_NAME_oneline(X509_get_subject_name(curr_cert), subject, 256);
-    fprintf(stderr, "%s (%s) - subject  = %s\n", MSG_DEBUG, __func__, subject);
+        error_trace->subject_dn = subject;
+        error_trace->issuer_dn  = issuer;
+        error_trace->pre_ok     = ok;
+        error_trace->post_ok    = -1;
+        error_trace->errnum     = errnum;
+        error_trace->errdepth   = errdepth;
+    }
 
+    /********/
+
+    /* When the verdict is not OK, see what we can do about it or fail */
     if (ok != 1) {
         switch (errnum) {
             case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
@@ -406,6 +452,12 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
                                 MSG_ERROR, __func__, (int) errnum, X509_verify_cert_error_string(errnum));
                 break;
         }
+    }
+
+    /* Record the (un)resolved error and store the struct */
+    if (error_trace) {
+        error_trace->post_ok = ok;
+        TAILQ_INSERT_TAIL(&(conn->diagnostics->error_trace_head), error_trace, entries);
     }
 
     return ok;
@@ -838,7 +890,7 @@ extract_peer_certinfo(struct sslconn *conn) {
         conn->diagnostics->has_peer = 1;
         certinfo = create_certinfo();
         if (!certinfo) {
-            fprintf(stderr, "%s Out of memory\n", MSG_ERROR);
+            fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
             return -3;
         }
         certinfo->cert = peer;
@@ -867,7 +919,7 @@ extract_peer_certinfo(struct sslconn *conn) {
 
             certinfo = create_certinfo();
             if (!certinfo) {
-                fprintf(stderr, "%s Out of memory\n", MSG_ERROR);
+                fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
                 return -5;
             }
             certinfo->at_depth = i;
@@ -1095,7 +1147,7 @@ display_conn_info(struct sslconn *conn) {
 
     buf = convert_time_t_to_utc_time_string(server_time_s);
     if (!buf) {
-        fprintf(stderr, "Error: Out of memory\n");
+        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
         return;
     }
     fprintf(stdout, ": random->unix_time : %lu, %s (utc/zulu)\n",
@@ -1158,6 +1210,42 @@ ASN1_OBJECT_to_buffer(ASN1_OBJECT *a) {
         return buf;
     }
     return buf;
+}
+
+void
+display_error_trace(struct sslconn *conn) {
+    struct error_trace *error_trace, *tmp_error_trace;
+    int i = 0;
+
+    fprintf(stdout, MAKE_LIGHT_BLUE "=== Error trace ===" RESET_COLOR "\n");
+
+    if (TAILQ_EMPTY(&(conn->diagnostics->error_trace_head))) {
+        fprintf(stderr, "%s No error traces recorded.\n", MSG_DEBUG);
+    } else {
+        for (error_trace = TAILQ_FIRST(&(conn->diagnostics->error_trace_head));
+             error_trace != NULL; error_trace = tmp_error_trace) {
+
+            fprintf(stdout, ": " MAKE_GREEN "--- %d" RESET_COLOR "\n", i);
+            fprintf(stdout, ": Have a cert       : %s\n", error_trace->cert ? "Yes" : "No");
+            if (error_trace->issuer_dn)
+                fprintf(stdout, ": Issuer DN         : %s\n", error_trace->issuer_dn);
+            if (error_trace->subject_dn)
+                fprintf(stdout, ": Subject DN        : %s\n", error_trace->subject_dn);
+
+            fprintf(stdout, ": Pre-verify        : %s\n",
+                            error_trace->pre_ok ? MAKE_GREEN "OK" RESET_COLOR : MAKE_RED "BAD" RESET_COLOR);
+            fprintf(stdout, ": Post-verify       : %s\n",
+                            error_trace->post_ok ? MAKE_GREEN "OK" RESET_COLOR : MAKE_RED "BAD" RESET_COLOR);
+            fprintf(stdout, ": Error number      : %d - \"%s\"\n",
+                            error_trace->errnum, X509_verify_cert_error_string(error_trace->errnum));
+            fprintf(stdout, ": Error depth       : %d\n", error_trace->errdepth);
+
+            /* Next */
+            tmp_error_trace = TAILQ_NEXT(error_trace, entries);
+            i++;
+        }
+    }
+    return;
 }
 
 void
@@ -1256,7 +1344,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         free(u_tmp);
         tmp = convert_time_t_to_utc_time_string(produced_at);
         if (!tmp) {
-            fprintf(stdout, "Error: Out of memory\n");
+            fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
             return;
         }
         if (produced_at < (time(NULL) - (3600 * 24 * 14))) {
@@ -1546,11 +1634,9 @@ diagnose_conn_info(struct sslconn *conn) {
     /* OCSP check, stapled, non-stapled (could use libcurl here) */
     diagnose_ocsp(conn, conn->ocsp_stapling, NULL, 1);
 
-
-    /* CRL check, (could use libcurl here) */
+    /* TODO: CRL and OCSP check, (could use libcurl here) */
     return;
 }
-
 
 /**
  * Author/source: Mischa Salle, gLExec (Apache2 Licence)
@@ -1768,8 +1854,7 @@ connect_to_serv_port(char *servername,
     if (!conn->quiet) {
         /* Display / Show the information we gathered */
         display_conn_info(conn);
-
-        /* Display / Show the information we gathered */
+        display_error_trace(conn);
         diagnose_conn_info(conn);
     }
     fprintf(stdout, MAKE_LIGHT_BLUE "===" RESET_COLOR "\n");
