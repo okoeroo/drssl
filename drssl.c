@@ -752,7 +752,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
                     /* Register the SAN */
                     p_san = malloc(sizeof(struct subjectaltname));
                     if (!p_san) {
-                        fprintf(stderr, "%s out of memory\n", MSG_ERROR);
+                        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
                         return -10;
                     }
 
@@ -768,7 +768,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
 
                     p_san->value = strdup(nval->value);
                     if (!p_san->value) {
-                        fprintf(stderr, "%s out of memory\n", MSG_ERROR);
+                        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
                         return -11;
                     }
 
@@ -804,7 +804,7 @@ extract_commonname(struct certinfo *certinfo, int quiet) {
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, NULL, 0);
     cn = malloc(cnt + 1);
     if (!cn) {
-        fprintf(stderr, "%s out of memory\n", MSG_ERROR);
+        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
         return -3;
     }
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, cnt + 1);
@@ -1740,7 +1740,7 @@ dump_to_disk(struct sslconn *conn) {
 
     path = malloc(PATH_MAX);
     if (!path) {
-        fprintf(stderr, "Error: out of memory\n");
+        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
         return;
     }
 
