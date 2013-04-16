@@ -131,6 +131,7 @@ struct sslconn {
     char *clientcert;
     char *clientkey;
     char *clientpass;
+    char *cipherlist;
 
     char *dumpdir;
     int   forcedumpdir;
@@ -176,6 +177,7 @@ int connect_to_serv_port(char *servername, unsigned short servport,
                          unsigned short sslversion,
                          char *cafile, char *capath,
                          char *cert, char *key, char *passphrase,
+                         char *cipherlist,
                          char *sni, char *dumpdir, int forcedumpdir,
                          int noverify, int quiet, int timeout);
 void usage(void);
@@ -501,10 +503,9 @@ setup_client_ctx(struct sslconn *conn) {
     }
 
     SSL_CTX_set_verify_depth(conn->ctx, 99);
-    if (SSL_CTX_set_cipher_list(conn->ctx, CIPHER_LIST) != 1) {
-        fprintf(stderr, "Error in setting cipher list, " \
-                        "no valid ciphers provided in \"%s\"\n",
-                        CIPHER_LIST);
+    if (SSL_CTX_set_cipher_list(conn->ctx, conn->cipherlist) != 1) {
+        fprintf(stderr, "%s Failed to set cipher list, no valid ciphers provided in \"%s\"\n",
+                        MSG_ERROR, conn->cipherlist);
         return -3;
     }
 
@@ -520,8 +521,9 @@ setup_client_ctx(struct sslconn *conn) {
     if (conn->clientcert && conn->clientkey) {
         rc = SSL_CTX_use_certificate_chain_file(conn->ctx, conn->clientcert);
         if (rc != 1) {
-            fprintf(stderr, "Error loading client certificate (chain) from "
+            fprintf(stderr, "%s Error loading client certificate (chain) from "
                             "file \"%s\", with reason: %s\n",
+                            MSG_ERROR,
                             conn->clientcert,
                             ERR_reason_error_string(ERR_get_error()));
             return -4;
@@ -529,9 +531,10 @@ setup_client_ctx(struct sslconn *conn) {
 
         rc = SSL_CTX_use_PrivateKey_file(conn->ctx, conn->clientkey, SSL_FILETYPE_PEM);
         if (rc != 1) {
-            fprintf(stderr, "Error loading client private key file from "
+            fprintf(stderr, "%s Error loading client private key file from "
                             "file \"%s\", with reason: %s\n",
-                            conn->clientkey,
+                            MSG_ERROR,
+                            conn->clientcert,
                             ERR_reason_error_string(ERR_get_error()));
             return -5;
         }
@@ -763,6 +766,8 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
                     } else if (!strcasecmp(nval->name, "email")) {
                         p_san->type = EMAIL;
                     } else {
+                        /* TODO */
+                        /* printf("Unknown : %s, %s\n", nval->name, nval->value); */
                         p_san->type = UNKNOWN;
                     }
 
@@ -1785,6 +1790,7 @@ connect_to_serv_port(char *servername,
                      char *cert,
                      char *key,
                      char *passphrase,
+                     char *cipherlist,
                      char *sni,
                      char *dumpdir,
                      int forcedumpdir,
@@ -1813,6 +1819,7 @@ connect_to_serv_port(char *servername,
     conn->clientcert   = cert;
     conn->clientkey    = key;
     conn->clientpass   = passphrase;
+    conn->cipherlist   = cipherlist;
     conn->sni          = sni;
     conn->dumpdir      = dumpdir;
     conn->noverify     = noverify;
@@ -1895,6 +1902,7 @@ usage(void) {
     printf("\t--cert <path to client certificate>\n");
     printf("\t--key <path to client private key file>\n");
     printf("\t--passphrase <passphrase to unlock the client private key file>\n");
+    printf("\t--cipherlist <cipher list>\n");
     printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
     printf("\t--dumpdir <dir where all certs and info will be dumped>\n");
     printf("\t--noverify (mute the verification callback, always 'ok')\n");
@@ -1911,7 +1919,8 @@ int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
     int sslversion = 10, noverify = 0, quiet = 0, timeout = 30, forcedumpdir = 0;
     int ipversion = PF_UNSPEC; /* System preference is leading */
-    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL, *sni = NULL, *passphrase = NULL, *dumpdir = NULL, *timeout_s = NULL;
+    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL,
+         *sni = NULL, *passphrase = NULL, *dumpdir = NULL, *timeout_s = NULL, *cipherlist = CIPHER_LIST;
     unsigned short port = 443; /* default HTTPS port number */
     long port_l = 0;
 
@@ -1933,6 +1942,7 @@ int main(int argc, char *argv[]) {
         {"cert",        required_argument, 0, 'c'},
         {"key",         required_argument, 0, 'k'},
         {"passphrase",  required_argument, 0, 'w'},
+        {"cipherlist",  required_argument, 0, 'L'},
         {"dumpdir",     required_argument, 0, 'q'},
         {"force-dump",  no_argument,       0, 'r'},
         {"timeout",     required_argument, 0, 't'},
@@ -2045,6 +2055,14 @@ int main(int argc, char *argv[]) {
                     usage();
                 }
                 break;
+            case 'L':
+                if (optarg)
+                    cipherlist = optarg;
+                else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
             case 'w':
                 if (optarg)
                     passphrase = optarg;
@@ -2099,6 +2117,7 @@ int main(int argc, char *argv[]) {
                                 ipversion, sslversion,
                                 cafile, capath,
                                 cert, key, passphrase,
+                                cipherlist,
                                 sni,
                                 dumpdir,
                                 forcedumpdir,
