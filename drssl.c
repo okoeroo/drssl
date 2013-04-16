@@ -30,7 +30,7 @@
 
 #include "queue.h"
 
-#define CIPHER_LIST "ALL"
+#define CIPHER_LIST "ALL:COMPLEMENTOFALL"
 
 #define RESET_COLOR     "\e[m"
 #define MAKE_D_GRAY     "\e[30m"
