@@ -14,9 +14,9 @@ calldrssl() {
     HOST=$2
 
     echo $CIPHER
-    ./drssl --cipherlist $CIPHER --host $HOST  >/dev/null 2>&1
+    drssl --capath /etc/grid-security/certs/ --cipherlist $CIPHER --host $HOST  >/dev/null 2>&1
     RC=$?
-    if [ $RC -eq 0 ]; then
+    if [ ${RC} -eq 0 ]; then
         echo "-------------- The cipher $CIPHER was usable on $HOST -------------"
     fi
 
