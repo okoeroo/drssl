@@ -93,6 +93,9 @@ struct certinfo {
     char            *subject_dn;
     char            *issuer_dn;
     unsigned int     bits;
+    char            *serial;
+    char            *valid_notbefore;
+    char            *valid_notafter;
     unsigned int     at_depth;
     unsigned short   selfsigned;
     unsigned short   ca;
@@ -134,6 +137,7 @@ struct sslconn {
     char *cipherlist;
 
     char *dumpdir;
+    char *csvfile;
     int   forcedumpdir;
     int   noverify;
     int   quiet;
@@ -149,6 +153,10 @@ struct certinfo *create_certinfo(void);
 struct sslconn *create_sslconn(void);
 void global_ssl_init(void);
 int x509IsCA(X509 *cert);
+char *ASN1_INTEGER_to_str(ASN1_INTEGER *a);
+char *ASN1_GENERALIZEDTIME_to_str(const ASN1_GENERALIZEDTIME *tm);
+char *ASN1_UTCTIME_to_str(const ASN1_UTCTIME *tm);
+char *ASN1_TIME_to_str(const ASN1_TIME *tm);
 #if OPENSSL_VERSION_NUMBER >= 0x10000000L
 static int ocsp_resp_cb(SSL *s, void *arg);
 #endif
@@ -172,14 +180,8 @@ void diagnose_conn_info(struct sslconn *conn);
 void diagnose_error_trace(struct sslconn *conn);
 void display_error_trace(struct sslconn *conn);
 void dump_to_disk(struct sslconn *conn);
-int connect_to_serv_port(char *servername, unsigned short servport,
-                         int ipversion,
-                         unsigned short sslversion,
-                         char *cafile, char *capath,
-                         char *cert, char *key, char *passphrase,
-                         char *cipherlist,
-                         char *sni, char *dumpdir, int forcedumpdir,
-                         int noverify, int quiet, int timeout);
+int append_to_csvfile(struct sslconn *conn);
+int connect_to_serv_port(struct sslconn *conn);
 void usage(void);
 unsigned short compare_certinfo_to_X509(struct certinfo *certinfo, X509 *cert);
 unsigned short find_X509_in_certinfo_tail(struct sslconn *conn, X509 *cert);
@@ -243,6 +245,144 @@ x509IsCA(X509 *cert) {
         return 1;
    else return 0;
 }
+
+char *
+ASN1_INTEGER_to_str(ASN1_INTEGER *a) {
+    int i;
+    char buf[2], *str, *t;
+    static const char *h="0123456789ABCDEF";
+
+    if (!a || a->length <= 0) {
+        return NULL;
+    }
+
+    t = str = calloc(1, a->length * 3);
+    if (!str)
+        return NULL;
+
+    for (i=0; i<a->length; i++) {
+        if ((i != 0) && (i%35 == 0)) {
+            return NULL;
+        }
+        buf[0]=h[((unsigned char)a->data[i]>>4)&0x0f];
+        buf[1]=h[((unsigned char)a->data[i]   )&0x0f];
+
+        if (i != 0) {
+            snprintf(t, 2, ":");
+            t++;
+        }
+
+        snprintf(t, 3, "%c%c", buf[0], buf[1]);
+        t += 2;
+    }
+    return str;
+}
+
+static const char *mon[12]=
+    {
+    "Jan","Feb","Mar","Apr","May","Jun",
+    "Jul","Aug","Sep","Oct","Nov","Dec"
+    };
+
+char *
+ASN1_GENERALIZEDTIME_to_str(const ASN1_GENERALIZEDTIME *tm) {
+    char *v;
+    int gmt=0;
+    int i, num;
+    int y=0,M=0,d=0,h=0,m=0,s=0;
+    char *f = NULL;
+    int f_len = 0;
+    char *str;
+
+    i=tm->length;
+    v=(char *)tm->data;
+
+    if (i < 12) goto err;
+    if (v[i-1] == 'Z') gmt=1;
+    for (i=0; i<12; i++)
+        if ((v[i] > '9') || (v[i] < '0')) goto err;
+    y= (v[0]-'0')*1000+(v[1]-'0')*100 + (v[2]-'0')*10+(v[3]-'0');
+    M= (v[4]-'0')*10+(v[5]-'0');
+    if ((M > 12) || (M < 1)) goto err;
+    d= (v[6]-'0')*10+(v[7]-'0');
+    h= (v[8]-'0')*10+(v[9]-'0');
+    m=  (v[10]-'0')*10+(v[11]-'0');
+    if (tm->length >= 14 &&
+            (v[12] >= '0') && (v[12] <= '9') &&
+            (v[13] >= '0') && (v[13] <= '9'))
+    {
+        s=  (v[12]-'0')*10+(v[13]-'0');
+        /* Check for fractions of seconds. */
+        if (tm->length >= 15 && v[14] == '.')
+        {
+            int l = tm->length;
+            f = &v[14];     /* The decimal point. */
+            f_len = 1;
+            while (14 + f_len < l && f[f_len] >= '0' && f[f_len] <= '9')
+                ++f_len;
+        }
+    }
+
+    num = snprintf(NULL, 0, "%s %2d %02d:%02d:%02d%.*s %d%s",
+                mon[M-1],d,h,m,s,f_len,f,y,(gmt)?" UTC":"");
+    str = malloc(num + 1);
+    if (!str)
+        return NULL;
+
+    snprintf(str, num + 1, "%s %2d %02d:%02d:%02d%.*s %d%s",
+                mon[M-1],d,h,m,s,f_len,f,y,(gmt)?" UTC":"");
+    return str;
+err:
+    return NULL;
+}
+
+char *
+ASN1_UTCTIME_to_str(const ASN1_UTCTIME *tm) {
+    const char *v;
+    int gmt=0;
+    int i, num;
+    int y=0,M=0,d=0,h=0,m=0,s=0;
+    char *str;
+
+    i=tm->length;
+    v=(const char *)tm->data;
+
+    if (i < 10) goto err;
+    if (v[i-1] == 'Z') gmt=1;
+    for (i=0; i<10; i++)
+            if ((v[i] > '9') || (v[i] < '0')) goto err;
+    y= (v[0]-'0')*10+(v[1]-'0');
+    if (y < 50) y+=100;
+    M= (v[2]-'0')*10+(v[3]-'0');
+    if ((M > 12) || (M < 1)) goto err;
+    d= (v[4]-'0')*10+(v[5]-'0');
+    h= (v[6]-'0')*10+(v[7]-'0');
+    m=  (v[8]-'0')*10+(v[9]-'0');
+    if (tm->length >=12 &&
+        (v[10] >= '0') && (v[10] <= '9') &&
+        (v[11] >= '0') && (v[11] <= '9'))
+            s=  (v[10]-'0')*10+(v[11]-'0');
+
+    num = snprintf(NULL, 0, "%s %2d %02d:%02d:%02d %d%s",
+                   mon[M-1],d,h,m,s,y+1900,(gmt)?" UTC":"");
+    str = malloc(num + 1);
+    if (!str)
+        return NULL;
+
+    snprintf(str, num + 1, "%s %2d %02d:%02d:%02d %d%s",
+                   mon[M-1],d,h,m,s,y+1900,(gmt)?" UTC":"");
+    return str;
+err:
+    return NULL;
+}
+
+char *
+ASN1_TIME_to_str(const ASN1_TIME *tm) {
+    if(tm->type == V_ASN1_UTCTIME)         return ASN1_UTCTIME_to_str(tm);
+    if(tm->type == V_ASN1_GENERALIZEDTIME) return ASN1_GENERALIZEDTIME_to_str(tm);
+    return NULL;
+}
+
 
 /**
  * Note that timegm() is non-standard. Linux manpage advices the following
@@ -343,13 +483,13 @@ ocsp_resp_cb(SSL *s, void *arg) {
 
     len = SSL_get_tlsext_status_ocsp_resp(s, &p);
     if (!p) {
-        fprintf(stderr, "%s no OCSP response sent\n", MSG_DEBUG);
+        if (!conn->quiet) fprintf(stderr, "%s no OCSP response sent\n", MSG_DEBUG);
         return 1;
     }
     if (!conn->quiet) fprintf(stderr, "%s OCSP response: ", MSG_DEBUG);
     rsp = d2i_OCSP_RESPONSE(NULL, &p, len);
     if (!rsp) {
-        fprintf(stderr, "%s response parse error\n", MSG_WARNING);
+        if (!conn->quiet) fprintf(stderr, "%s response parse error\n", MSG_WARNING);
         return 1;
     }
     if (!conn->quiet) fprintf(stderr, "%s got stapled response\n", MSG_DEBUG);
@@ -382,9 +522,6 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     struct sslconn     *conn        = NULL;
     struct error_trace *error_trace = NULL;
 
-    fprintf(stderr, "%s (%s) Re-Verify certificate at depth: %i, pre-OK is: %d (%s), errnum is: %lu, \"%s\"\n",
-                    MSG_DEBUG, __func__, errdepth, ok, ok ? MAKE_GREEN "OK" RESET_COLOR : MAKE_RED "BAD" RESET_COLOR,
-                    errnum, X509_verify_cert_error_string(errnum));
 
     /* Retrieve the SSL object parenting the X509_STORE_CTX */
     ssl = (SSL*)X509_STORE_CTX_get_ex_data(store_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
@@ -393,12 +530,19 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
         conn = SSL_get_app_data(ssl);
     }
 
+    if (!conn->quiet)
+        fprintf(stderr, "%s (%s) Re-Verify certificate at depth: %i, "
+                        "pre-OK is: %d (%s), errnum is: %lu, \"%s\"\n",
+                        MSG_DEBUG, __func__, errdepth, ok,
+                        ok ? MAKE_GREEN "OK" RESET_COLOR : MAKE_RED "BAD" RESET_COLOR,
+                        errnum, X509_verify_cert_error_string(errnum));
+
     curr_cert = X509_STORE_CTX_get_current_cert(store_ctx);
     if (curr_cert) {
         issuer = X509_NAME_oneline(X509_get_issuer_name(curr_cert), NULL, 0);
-        fprintf(stderr, "%s (%s) - issuer   = %s\n", MSG_DEBUG, __func__, issuer);
+        if (!conn->quiet) fprintf(stderr, "%s (%s) - issuer   = %s\n", MSG_DEBUG, __func__, issuer);
         subject = X509_NAME_oneline(X509_get_subject_name(curr_cert), NULL, 0);
-        fprintf(stderr, "%s (%s) - subject  = %s\n", MSG_DEBUG, __func__, subject);
+        if (!conn->quiet) fprintf(stderr, "%s (%s) - subject  = %s\n", MSG_DEBUG, __func__, subject);
     }
 
     if (!conn) {
@@ -407,7 +551,7 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     } else {
         error_trace = calloc(sizeof(struct error_trace), 1);
         if (!error_trace) {
-            fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+            if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
             free(issuer);
             free(subject);
             return 0; /* Return as a verification failure */
@@ -432,26 +576,29 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
         switch (errnum) {
             case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
             case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-                fprintf(stderr, "%s %s: Override Self-Signed certificate error.\n",
-                                MSG_ERROR,
-                                __func__);
+                if (!conn->quiet)
+                    fprintf(stderr, "%s %s: Override Self-Signed certificate error.\n",
+                                            MSG_ERROR,
+                                            __func__);
                 ok = 1;
                 break;
             case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
-                fprintf(stderr, "%s %s: Unable to find the issuer (locally on disk) of the "
-                                        "certificate now in evaluation.\n"\
-                                "%s         Options: 1. Certificate was signed by an unknown CA, see the "
-                                                     "--capath and --cafile options to solve this perhaps.\n"
-                                "%s                  2. The server didn't send an intermediate CA "
-                                                     "certificate to complete the certificate chain\n",
-                                MSG_ERROR,
-                                __func__,
-                                MSG_BLANK,
-                                MSG_BLANK);
+                if (!conn->quiet)
+                    fprintf(stderr, "%s %s: Unable to find the issuer (locally on disk) of the "
+                                            "certificate now in evaluation.\n"\
+                                    "%s         Options: 1. Certificate was signed by an unknown CA, see the "
+                                                         "--capath and --cafile options to solve this perhaps.\n"
+                                    "%s                  2. The server didn't send an intermediate CA "
+                                                         "certificate to complete the certificate chain\n",
+                                    MSG_ERROR,
+                                    __func__,
+                                    MSG_BLANK,
+                                    MSG_BLANK);
                 break;
             default:
-                fprintf(stderr, "%s %s: errnum %d: %s\n",
-                                MSG_ERROR, __func__, (int) errnum, X509_verify_cert_error_string(errnum));
+                if (!conn->quiet)
+                    fprintf(stderr, "%s %s: errnum %d: %s\n",
+                                    MSG_ERROR, __func__, (int) errnum, X509_verify_cert_error_string(errnum));
                 break;
         }
     }
@@ -844,6 +991,10 @@ extract_certinfo_details(struct certinfo *certinfo, int quiet) {
     certinfo->bits = EVP_PKEY_bits(pktmp);
     EVP_PKEY_free(pktmp);
 
+    certinfo->serial = ASN1_INTEGER_to_str(X509_get_serialNumber(certinfo->cert));
+    certinfo->valid_notbefore = ASN1_TIME_to_str(X509_get_notBefore(certinfo->cert));
+    certinfo->valid_notafter  = ASN1_TIME_to_str(X509_get_notAfter(certinfo->cert));
+
     certinfo->subject_dn = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
     certinfo->issuer_dn  = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
 
@@ -1090,6 +1241,9 @@ display_certinfo(struct certinfo *certinfo) {
 
     fprintf(stdout, ": Depth             : %u\n", certinfo->at_depth);
     fprintf(stdout, ": Public key bits(p): %d\n", certinfo->bits);
+    fprintf(stdout, ": Serial number     : %s\n", certinfo->serial);
+    fprintf(stdout, ": Valid not before  : %s\n", certinfo->valid_notbefore);
+    fprintf(stdout, ": Valid not after   : %s\n", certinfo->valid_notafter);
 
     for (p_san = TAILQ_FIRST(&(certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
         fprintf(stdout, ": Subject Alt Name  : %s\n", p_san->value);
@@ -1477,8 +1631,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
 
 void
 diagnose_conn_info(struct sslconn *conn) {
-    struct certinfo       *certinfo, *tmp_certinfo;
-    struct certinfo       *peer_certinfo;
+    struct certinfo       *certinfo = NULL, *tmp_certinfo = NULL, *peer_certinfo = NULL;
     struct subjectaltname *p_san, *tmp_p_san;
     /* uint32_t               random_time; */
     /* time_t                 server_time_s; */
@@ -1490,7 +1643,7 @@ diagnose_conn_info(struct sslconn *conn) {
     if (!conn)
         return;
 
-    fprintf(stdout, MAKE_LIGHT_BLUE "=== Diagnoses ===" RESET_COLOR "\n");
+    if (!conn->quiet) fprintf(stdout, MAKE_LIGHT_BLUE "=== Diagnoses ===" RESET_COLOR "\n");
 
     /* TODO: Get a chain/stack of errors */
     ssl_verify_result = SSL_get_verify_result(conn->ssl);
@@ -1781,59 +1934,92 @@ final:
 }
 
 int
-connect_to_serv_port(char *servername,
-                     unsigned short servport,
-                     int ipversion,
-                     unsigned short sslversion,
-                     char *cafile,
-                     char *capath,
-                     char *cert,
-                     char *key,
-                     char *passphrase,
-                     char *cipherlist,
-                     char *sni,
-                     char *dumpdir,
-                     int forcedumpdir,
-                     int noverify,
-                     int quiet,
-                     int timeout) {
-    struct sslconn *conn;
+append_to_csvfile(struct sslconn *conn) {
+    /* echo "\"${HOST}\",\"${PORT}\",\"$SUBJECT\",\"$ISSUER\",\"$KEYSIZE\",\"$SERIAL\",\"$START_DT\",\"$END_DT\",\"$SELF_SIGNED\",\"$SANS\"" >> "$OUTPUT_FILE" */
+    struct certinfo       *certinfo = NULL, *tmp_certinfo = NULL;
+    struct subjectaltname *p_san, *tmp_p_san;
+    char *tmp;
+    int i;
 
-    if (!quiet) fprintf(stderr, "%s (%s) Start sequence\n", MSG_DEBUG, __func__);
+    for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
+        /* Only the peer cert, skip the rest */
+        if (certinfo->at_depth != 0) {
+            continue;
+        }
 
-    if (!servername) {
+        printf("\"%s\",", conn->host_ip);
+        printf("\"%d\",", conn->port);
+
+        tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
+        printf("\"%s\",", tmp);
+        free(tmp);
+        tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
+        printf("\"%s\",", tmp);
+        free(tmp);
+
+        printf("\"%d\",", certinfo->bits);
+
+        /* Get serial number */
+        printf("\"%s\",", certinfo->serial ? certinfo->serial : "");
+
+        printf("\"%s\",", certinfo->valid_notbefore ? certinfo->valid_notbefore : "");
+        printf("\"%s\",", certinfo->valid_notafter ? certinfo->valid_notafter : "");
+
+        if (certinfo->selfsigned) {
+            printf("\"CA\",");
+        } else {
+            printf("\"EEC\",");
+        }
+
+        if (!(TAILQ_EMPTY(&(certinfo->san_head)))) {
+            printf("\"");
+            i = 0;
+            for (p_san = TAILQ_FIRST(&(certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
+                if (i > 0)
+                    printf(",");
+
+                printf("%s", p_san->value);
+                i++;
+                tmp_p_san = TAILQ_NEXT(p_san, entries);
+            }
+            printf("\",");
+        } else {
+            printf("\"\",");
+        }
+
+        printf("\"%s\",", certinfo->commonname);
+
+
+        if (conn->diagnostics->found_root_ca_in_stack) {
+            printf("\"yes\",");
+        } else {
+            printf("\"no\",");
+        }
+
+        tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
+
+        break;
+    }
+
+    return 0;
+}
+
+int
+connect_to_serv_port(struct sslconn *conn) {
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Start sequence\n", MSG_DEBUG, __func__);
+
+    if (!conn->host_ip) {
         fprintf(stderr, "Error: no host specified\n");
         return -1;
     }
 
-    conn = create_sslconn();
-    if (conn == NULL)
-        return -1;
-
-    conn->host_ip      = servername;
-    conn->port         = servport;
-    conn->ipversion    = ipversion;
-    conn->sslversion   = sslversion;
-    conn->cafile       = cafile;
-    conn->capath       = capath;
-    conn->clientcert   = cert;
-    conn->clientkey    = key;
-    conn->clientpass   = passphrase;
-    conn->cipherlist   = cipherlist;
-    conn->sni          = sni;
-    conn->dumpdir      = dumpdir;
-    conn->noverify     = noverify;
-    conn->quiet        = quiet;
-    conn->timeout      = timeout;
-    conn->forcedumpdir = forcedumpdir;
-
     /* Early setup warnings */
     if (!conn->cafile && !conn->capath) {
-        fprintf(stdout, "%s No --cafile or --capath was set. DrSSL has no way "\
-                        "of verifying the certificate chain. Unless OpenSSL is "\
-                        "patched to lookup in a default location, e.g. OSX' "\
-                        "KeyChain.app\n",
-                        MSG_WARNING);
+        if (!conn->quiet) fprintf(stdout, "%s No --cafile or --capath was set. DrSSL has no way "\
+                                          "of verifying the certificate chain. Unless OpenSSL is "\
+                                          "patched to lookup in a default location, e.g. OSX' "\
+                                          "KeyChain.app\n",
+                                          MSG_WARNING);
     }
 
     /* Create SSL context */
@@ -1864,11 +2050,16 @@ connect_to_serv_port(char *servername,
         display_error_trace(conn);
         diagnose_conn_info(conn);
     }
-    fprintf(stdout, MAKE_LIGHT_BLUE "===" RESET_COLOR "\n");
+    if (!conn->quiet) fprintf(stdout, MAKE_LIGHT_BLUE "===" RESET_COLOR "\n");
 
     if (conn->dumpdir) {
         /* Dump all information as files into a directory */
         dump_to_disk(conn);
+    }
+
+    if (conn->csvfile) {
+        /* Add a line to the listed the CSV file */
+        append_to_csvfile(conn);
     }
 
     if (!conn->quiet) fprintf(stderr, "%s (%s) SSL Shutting down.\n", MSG_DEBUG, __func__);
@@ -1909,6 +2100,7 @@ usage(void) {
     printf("\t--quiet (just mute)\n");
     printf("\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
     printf("\t--force-dump (creates dump directory if it doesn't exist yet)\n");
+    printf("\t--csv <path to output CSV file>\n");
     printf("\n");
 
     return;
@@ -1917,12 +2109,9 @@ usage(void) {
 
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
-    int sslversion = 10, noverify = 0, quiet = 0, timeout = 30, forcedumpdir = 0;
-    int ipversion = PF_UNSPEC; /* System preference is leading */
-    char *servername = NULL, *cafile = NULL, *capath = NULL, *cert = NULL, *key = NULL,
-         *sni = NULL, *passphrase = NULL, *dumpdir = NULL, *timeout_s = NULL, *cipherlist = CIPHER_LIST;
-    unsigned short port = 443; /* default HTTPS port number */
+    char *timeout_s = NULL;
     long port_l = 0;
+    struct sslconn *conn; /* The Brain */
 
     static struct option long_options[] = /* options */
     {
@@ -1947,8 +2136,24 @@ int main(int argc, char *argv[]) {
         {"force-dump",  no_argument,       0, 'r'},
         {"timeout",     required_argument, 0, 't'},
         {"noverify",    no_argument,       0, 'N'},
+        {"csv",         required_argument, 0, 'V'},
         {"quiet",       no_argument,       0, 'Q'}
     };
+
+    /* Create the Brain */
+    conn = create_sslconn();
+    if (conn == NULL)
+        return -1;
+
+    /* Defaults */
+    conn->ipversion = PF_UNSPEC;
+    conn->cipherlist = CIPHER_LIST;
+    conn->port = 443; /* default HTTPS port number */
+    conn->sslversion = 10;
+    conn->noverify = 0;
+    conn->quiet = 0;
+    conn->timeout = 30;
+    conn->forcedumpdir = 0;
 
     opterr = 0;
     optind = 0;
@@ -1964,38 +2169,38 @@ int main(int argc, char *argv[]) {
                 usage();
                 return 0;
             case '2':
-                sslversion = 2;
+                conn->sslversion = 2;
                 break;
             case '3':
-                sslversion = 3;
+                conn->sslversion = 3;
                 break;
             case '4':
-                ipversion = AF_INET;
+                conn->ipversion = AF_INET;
                 break;
             case '6':
-                ipversion = AF_INET6;
+                conn->ipversion = AF_INET6;
                 break;
             case 'A':
-                sslversion = 10;
+                conn->sslversion = 10;
                 break;
             case 'B':
-                sslversion = 11;
+                conn->sslversion = 11;
                 break;
             case 'C':
-                sslversion = 12;
+                conn->sslversion = 12;
                 break;
             case 'N':
-                noverify = 1;
+                conn->noverify = 1;
                 break;
             case 'Q':
-                quiet = 1;
+                conn->quiet = 1;
                 break;
             case 'r':
-                forcedumpdir = 1;
+                conn->forcedumpdir = 1;
                 break;
             case 's':
                 if (optarg)
-                    sni = optarg;
+                    conn->sni = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2003,7 +2208,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'o':
                 if (optarg)
-                    servername = optarg;
+                    conn->host_ip = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2017,7 +2222,7 @@ int main(int argc, char *argv[]) {
                                         "an unsigned 2^16 integer (or short)\n");
                         return 1;
                     }
-                    port = port_l;
+                    conn->port = port_l;
                 } else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2025,7 +2230,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'F':
                 if (optarg)
-                    cafile = optarg;
+                    conn->cafile = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2033,7 +2238,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'P':
                 if (optarg)
-                    capath = optarg;
+                    conn->capath = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2041,7 +2246,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'c':
                 if (optarg)
-                    cert = optarg;
+                    conn->clientcert = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2049,7 +2254,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'k':
                 if (optarg)
-                    key = optarg;
+                    conn->clientkey = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2057,7 +2262,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'L':
                 if (optarg)
-                    cipherlist = optarg;
+                    conn->cipherlist = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2065,7 +2270,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'w':
                 if (optarg)
-                    passphrase = optarg;
+                    conn->clientpass = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2073,7 +2278,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'q':
                 if (optarg)
-                    dumpdir = optarg;
+                    conn->dumpdir = optarg;
                 else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2082,12 +2287,20 @@ int main(int argc, char *argv[]) {
             case 't':
                 if (optarg) {
                     timeout_s = optarg;
-                    timeout = strtol(timeout_s, NULL, 10);
-                    if (timeout == 0) {
+                    conn->timeout = strtol(timeout_s, NULL, 10);
+                    if (conn->timeout == 0) {
                         fprintf(stderr, "Error: can't convert input\n");
                         usage();
                     }
                 } else {
+                    fprintf(stderr, "Error: expecting a parameter.\n");
+                    usage();
+                }
+                break;
+            case 'V':
+                if (optarg)
+                    conn->csvfile = optarg;
+                else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
                 }
@@ -2101,28 +2314,18 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (!servername) {
+    if (!conn->host_ip) {
         fprintf(stderr, "Error: Please specify a hostname/IP with the option --host\n");
         usage();
     }
 
     /* If only one is provided, use one or the other for the one or the other */
-    if (!cert && key) cert = key;
-    if (cert && !key) key = cert;
+    if (!conn->clientcert && conn->clientkey) conn->clientcert = conn->clientkey;
+    if (conn->clientcert && !conn->clientkey) conn->clientkey = conn->clientcert;
 
     /* OpenSSL init */
     global_ssl_init();
 
-    return connect_to_serv_port(servername, port,
-                                ipversion, sslversion,
-                                cafile, capath,
-                                cert, key, passphrase,
-                                cipherlist,
-                                sni,
-                                dumpdir,
-                                forcedumpdir,
-                                noverify,
-                                quiet,
-                                timeout);
+    return connect_to_serv_port(conn);
 }
 
