@@ -43,11 +43,14 @@ Usage:
     --cert <path to client certificate>
     --key <path to client private key file>
     --passphrase <passphrase to unlock the client private key file>
+    --cipherlist <cipher list>
     --sni <TLS SNI (Server Name Indication) hostname>
     --dumpdir <dir where all certs and info will be dumped>
     --noverify (mute the verification callback, always 'ok')
     --quiet (just mute)
-    --timeout <seconds> (max time to setup the TCP/IP connection) - default is 30 seconds
+    --timeout <seconds> (max time to setup the TCP/IP connection)
+    --force-dump (creates dump directory if it doesn't exist yet)
+    --csvfile <path to output CSV file>
 
 
 Supports:
