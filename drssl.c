@@ -2112,7 +2112,7 @@ usage(void) {
     printf("\t--quiet (just mute)\n");
     printf("\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
     printf("\t--force-dump (creates dump directory if it doesn't exist yet)\n");
-    printf("\t--csv <path to output CSV file>\n");
+    printf("\t--csvfile <path to output CSV file>\n");
     printf("\n");
 
     return;
@@ -2148,7 +2148,7 @@ int main(int argc, char *argv[]) {
         {"force-dump",  no_argument,       0, 'r'},
         {"timeout",     required_argument, 0, 't'},
         {"noverify",    no_argument,       0, 'N'},
-        {"csv",         required_argument, 0, 'V'},
+        {"csvfile",     required_argument, 0, 'V'},
         {"quiet",       no_argument,       0, 'Q'}
     };
 
