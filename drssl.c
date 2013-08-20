@@ -168,9 +168,9 @@ int create_client_socket (int * client_socket, const char * server,
                           int time_out_milliseconds);
 int connect_bio_to_serv_port(struct sslconn *conn);
 int connect_ssl_over_socket(struct sslconn *conn);
-int extract_subjectaltnames(struct certinfo *certinfo, int quiet);
-int extract_commonname(struct certinfo *certinfo, int quiet);
-int extract_certinfo_details(struct certinfo *certinfo, int quiet);
+int extract_subjectaltnames(struct sslconn *conn, struct certinfo *certinfo);
+int extract_commonname(struct sslconn *conn, struct certinfo *certinfo);
+int extract_certinfo_details(struct sslconn *conn, struct certinfo *certinfo);
 int extract_peer_certinfo(struct sslconn *conn);
 static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent);
 int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
@@ -458,7 +458,7 @@ convert_time_t_to_utc_time_string(time_t t) {
 
     buf = calloc(27, 1);
     if (!buf) {
-        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+        /* fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__); */
         return NULL;
     }
 
@@ -644,15 +644,15 @@ setup_client_ctx(struct sslconn *conn) {
             break;
 #endif
         default:
-            fprintf(stderr, "Wrong SSL version/type provided to %s()\n",
-                    __func__);
+            if (!conn->quiet) fprintf(stderr, "Wrong SSL version/type provided to %s()\n",
+                                      __func__);
             return -2;
     }
 
     SSL_CTX_set_verify_depth(conn->ctx, 99);
     if (SSL_CTX_set_cipher_list(conn->ctx, conn->cipherlist) != 1) {
-        fprintf(stderr, "%s Failed to set cipher list, no valid ciphers provided in \"%s\"\n",
-                        MSG_ERROR, conn->cipherlist);
+        if (!conn->quiet) fprintf(stderr, "%s Failed to set cipher list, no valid ciphers provided in \"%s\"\n",
+                                  MSG_ERROR, conn->cipherlist);
         return -3;
     }
 
@@ -661,28 +661,28 @@ setup_client_ctx(struct sslconn *conn) {
         (1 != SSL_CTX_load_verify_locations(conn->ctx,
                                             conn->cafile,
                                             conn->capath))) {
-        fprintf(stderr, "Warning: SSL_CTX_load_verify_locations failed\n");
+        if (!conn->quiet) fprintf(stderr, "Warning: SSL_CTX_load_verify_locations failed\n");
     }
 
     /* Use a client certificate for authentication */
     if (conn->clientcert && conn->clientkey) {
         rc = SSL_CTX_use_certificate_chain_file(conn->ctx, conn->clientcert);
         if (rc != 1) {
-            fprintf(stderr, "%s Error loading client certificate (chain) from "
-                            "file \"%s\", with reason: %s\n",
-                            MSG_ERROR,
-                            conn->clientcert,
-                            ERR_reason_error_string(ERR_get_error()));
+            if (!conn->quiet) fprintf(stderr, "%s Error loading client certificate (chain) from "
+                                      "file \"%s\", with reason: %s\n",
+                                      MSG_ERROR,
+                                      conn->clientcert,
+                                      ERR_reason_error_string(ERR_get_error()));
             return -4;
         }
 
         rc = SSL_CTX_use_PrivateKey_file(conn->ctx, conn->clientkey, SSL_FILETYPE_PEM);
         if (rc != 1) {
-            fprintf(stderr, "%s Error loading client private key file from "
-                            "file \"%s\", with reason: %s\n",
-                            MSG_ERROR,
-                            conn->clientcert,
-                            ERR_reason_error_string(ERR_get_error()));
+            if (!conn->quiet) fprintf(stderr, "%s Error loading client private key file from "
+                                      "file \"%s\", with reason: %s\n",
+                                      MSG_ERROR,
+                                      conn->clientcert,
+                                      ERR_reason_error_string(ERR_get_error()));
             return -5;
         }
     }
@@ -733,14 +733,13 @@ create_client_socket (int * client_socket,
     snprintf(portstr, 24, "%d", port);
     rc = getaddrinfo(server, &portstr[0], &hints, &res);
     if (rc != 0) {
-        fprintf(stderr, "%s Failed to getaddrinfo (%s, %s, *, *)\n",
-                MSG_ERROR, server, portstr);
+        /* fprintf(stderr, "%s Failed to getaddrinfo (%s, %s, *, *)\n", MSG_ERROR, server, portstr); */
         return 1;
     }
 
     /* Create new socket */
     if ((mysock = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) < 0) {
-        fprintf(stderr, "%s Failed to create socket\n", MSG_ERROR);
+        /* fprintf(stderr, "%s Failed to create socket\n", MSG_ERROR); */
         return 1;
     }
 
@@ -785,9 +784,12 @@ connect_bio_to_serv_port(struct sslconn *conn) {
     if (!conn || !conn->host_ip)
         return -1;
 
-    if (create_client_socket (&sock, conn->host_ip, conn->port, conn->ipversion, conn->timeout * 1000) != 0) {
-        fprintf(stderr, "%s failed to connect to \"%s\" on port \'%d\'\n",
-                        MSG_ERROR, conn->host_ip, conn->port);
+    if (create_client_socket (&sock,
+                              conn->host_ip, conn->port,
+                              conn->ipversion, conn->timeout * 1000) != 0) {
+        if (!conn->quiet) fprintf(stderr,
+                                  "%s failed to connect to \"%s\" on port \'%d\'\n",
+                                  MSG_ERROR, conn->host_ip, conn->port);
         return -2;
     }
     if (!conn->quiet) fprintf(stderr, "%s (%s) Connected to \"%s\" on port \'%d\'\n",
@@ -827,7 +829,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
     /* Connecting the Socket to the SSL layer */
     conn->bio = BIO_new_socket (conn->sock, BIO_NOCLOSE);
     if (!conn->bio) {
-        fprintf(stderr, "%s Error: Failed to tie the socket to a SSL BIO\n", MSG_ERROR);
+        if (!conn->quiet) fprintf(stderr, "%s Error: Failed to tie the socket to a SSL BIO\n", MSG_ERROR);
         SSL_free(conn->ssl);
         return -3;
     }
@@ -835,7 +837,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
 
     SSL_set_bio(conn->ssl, conn->bio, conn->bio);
     if (SSL_connect(conn->ssl) <= 0) {
-        fprintf(stderr, "%s (%s) Error connecting SSL\n", MSG_ERROR, __func__);
+        if (!conn->quiet) fprintf(stderr, "%s (%s) Error connecting SSL\n", MSG_ERROR, __func__);
         SSL_free(conn->ssl);
         return -4;
     }
@@ -845,7 +847,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
 
 /* <0: error, 0: No SAN found, 1: SAN found */
 int
-extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
+extract_subjectaltnames(struct sslconn *conn, struct certinfo *certinfo) {
     int i, j, extcount;
     unsigned short found_san = 0;
     X509_EXTENSION          *ext;
@@ -860,7 +862,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
     void                    *ext_str = NULL;
     struct subjectaltname   *p_san;
 
-    if (!quiet) fprintf(stderr, "%s (%s) Extract and register Subject Alt Names.\n", MSG_DEBUG, __func__);
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Extract and register Subject Alt Names.\n", MSG_DEBUG, __func__);
 
     if (!certinfo || !certinfo->cert)
         return -1;
@@ -902,7 +904,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
                     /* Register the SAN */
                     p_san = malloc(sizeof(struct subjectaltname));
                     if (!p_san) {
-                        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+                        if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
                         return -10;
                     }
 
@@ -920,7 +922,7 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
 
                     p_san->value = strdup(nval->value);
                     if (!p_san->value) {
-                        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+                        if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
                         return -11;
                     }
 
@@ -937,26 +939,26 @@ extract_subjectaltnames(struct certinfo *certinfo, int quiet) {
 }
 
 int
-extract_commonname(struct certinfo *certinfo, int quiet) {
+extract_commonname(struct sslconn *conn, struct certinfo *certinfo) {
     X509_NAME *subj;
     int cnt;
     char *cn;
 
-    if (!quiet) fprintf(stderr, "%s (%s) Extract and register the Common Name\n", MSG_DEBUG, __func__);
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Extract and register the Common Name\n", MSG_DEBUG, __func__);
 
     if (!certinfo || !certinfo->cert)
         return -1;
 
     subj = X509_get_subject_name(certinfo->cert);
     if (!subj) {
-        fprintf(stderr, "%s could not extract the Subject DN\n", MSG_ERROR);
+        if (!conn->quiet) fprintf(stderr, "%s could not extract the Subject DN\n", MSG_ERROR);
         return -2;
     }
 
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, NULL, 0);
     cn = malloc(cnt + 1);
     if (!cn) {
-        fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+        if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
         return -3;
     }
     cnt = X509_NAME_get_text_by_NID(subj, NID_commonName, cn, cnt + 1);
@@ -966,19 +968,20 @@ extract_commonname(struct certinfo *certinfo, int quiet) {
 }
 
 int
-extract_certinfo_details(struct certinfo *certinfo, int quiet) {
+extract_certinfo_details(struct sslconn *conn,
+                         struct certinfo *certinfo) {
     EVP_PKEY *pktmp;
 
     if (!certinfo)
         return -1;
 
     /* List and register the SubjectAltNames */
-    if (extract_subjectaltnames(certinfo, quiet) < 0) {
+    if (extract_subjectaltnames(conn, certinfo) < 0) {
         return -2;
     }
 
     /* Extract and register the Common Name */
-    if (extract_commonname(certinfo, quiet) < 0) {
+    if (extract_commonname(conn, certinfo) < 0) {
         return -3;
     }
 
@@ -1039,14 +1042,14 @@ extract_peer_certinfo(struct sslconn *conn) {
     /* Record peer certificate */
     peer = SSL_get_peer_certificate(conn->ssl);
     if (!peer) {
-        fprintf(stderr, "%s No peer certificate found in SSL.\n", MSG_ERROR);
+        if (!conn->quiet)fprintf(stderr, "%s No peer certificate found in SSL.\n", MSG_ERROR);
         conn->diagnostics->has_peer = 0;
         return -2;
     } else {
         conn->diagnostics->has_peer = 1;
         certinfo = create_certinfo();
         if (!certinfo) {
-            fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+            if (!conn->quiet)fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
             return -3;
         }
         certinfo->cert = peer;
@@ -1060,7 +1063,7 @@ extract_peer_certinfo(struct sslconn *conn) {
      * not. Assume client side for now */
     stack = SSL_get_peer_cert_chain(conn->ssl);
     if (!stack) {
-        fprintf(stderr, "%s No peer certificate stack found in SSL\n", MSG_WARNING);
+        if (!conn->quiet) fprintf(stderr, "%s No peer certificate stack found in SSL\n", MSG_WARNING);
         conn->diagnostics->has_stack = 0;
     } else {
         conn->diagnostics->has_stack = 1;
@@ -1075,7 +1078,7 @@ extract_peer_certinfo(struct sslconn *conn) {
 
             certinfo = create_certinfo();
             if (!certinfo) {
-                fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
+                if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
                 return -5;
             }
             certinfo->at_depth = i;
@@ -1086,7 +1089,7 @@ extract_peer_certinfo(struct sslconn *conn) {
 
         /* Loop over found certinfo structs to extract certificate details per certificate */
         for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
-            extract_certinfo_details(certinfo, conn->quiet);
+            extract_certinfo_details(conn, certinfo);
             tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
         }
     }
