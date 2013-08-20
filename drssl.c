@@ -1940,6 +1940,10 @@ append_to_csvfile(struct sslconn *conn) {
     struct subjectaltname *p_san, *tmp_p_san;
     char *tmp;
     int i;
+    FILE *f;
+
+    if (!conn->csvfile)
+        return 1;
 
     for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
         /* Only the peer cert, skip the rest */
@@ -1947,55 +1951,63 @@ append_to_csvfile(struct sslconn *conn) {
             continue;
         }
 
-        printf("\"%s\",", conn->host_ip);
-        printf("\"%d\",", conn->port);
+        f = fopen(conn->csvfile, "a");
+        if (!f) {
+            fprintf(stderr, "Error: CSV file \"%s\" could not be opened: %s\n", conn->csvfile, strerror(errno));
+            return 1;
+        }
+
+        fprintf(f, "\"%s\",", conn->host_ip);
+        fprintf(f, "\"%d\",", conn->port);
 
         tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
-        printf("\"%s\",", tmp);
+        fprintf(f, "\"%s\",", tmp);
         free(tmp);
         tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
-        printf("\"%s\",", tmp);
+        fprintf(f, "\"%s\",", tmp);
         free(tmp);
 
-        printf("\"%d\",", certinfo->bits);
+        fprintf(f, "\"%d\",", certinfo->bits);
 
         /* Get serial number */
-        printf("\"%s\",", certinfo->serial ? certinfo->serial : "");
+        fprintf(f, "\"%s\",", certinfo->serial ? certinfo->serial : "");
 
-        printf("\"%s\",", certinfo->valid_notbefore ? certinfo->valid_notbefore : "");
-        printf("\"%s\",", certinfo->valid_notafter ? certinfo->valid_notafter : "");
+        fprintf(f, "\"%s\",", certinfo->valid_notbefore ? certinfo->valid_notbefore : "");
+        fprintf(f, "\"%s\",", certinfo->valid_notafter ? certinfo->valid_notafter : "");
 
         if (certinfo->selfsigned) {
-            printf("\"CA\",");
+            fprintf(f, "\"CA\",");
         } else {
-            printf("\"EEC\",");
+            fprintf(f, "\"EEC\",");
         }
 
         if (!(TAILQ_EMPTY(&(certinfo->san_head)))) {
-            printf("\"");
+            fprintf(f, "\"");
             i = 0;
             for (p_san = TAILQ_FIRST(&(certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
                 if (i > 0)
-                    printf(",");
+                    fprintf(f, ",");
 
-                printf("%s", p_san->value);
+                fprintf(f, "%s", p_san->value);
                 i++;
                 tmp_p_san = TAILQ_NEXT(p_san, entries);
             }
-            printf("\",");
+            fprintf(f, "\",");
         } else {
-            printf("\"\",");
+            fprintf(f, "\"\",");
         }
 
-        printf("\"%s\",", certinfo->commonname);
+        fprintf(f, "\"%s\",", certinfo->commonname);
 
 
         if (conn->diagnostics->found_root_ca_in_stack) {
-            printf("\"yes\",");
+            fprintf(f, "\"yes\"");
         } else {
-            printf("\"no\",");
+            fprintf(f, "\"no\"");
         }
 
+        fprintf(f, "\n");
+        fflush(f);
         tmp_certinfo = TAILQ_NEXT(certinfo, entries); /* Next */
 
         break;
