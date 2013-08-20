@@ -191,7 +191,8 @@ fi
 
 # Add csv column title
 if [ ! -f "$OUTPUT_FILE" ]; then
-    echo "\"Host\",\"Port\",\"Certificate Subject\",\"Issuer\",\"Keysize\",\"Serial\",\"Valid from date\",\"Valid until date\",\"self-signed\",\"Subject Alternative Names (DNS)\"" > "$OUTPUT_FILE"
+    #echo "\"Host\",\"Port\",\"Certificate Subject\",\"Issuer\",\"Keysize\",\"Serial\",\"Valid from date\",\"Valid until date\",\"self-signed\",\"Subject Alternative Names (DNS)\"" > "$OUTPUT_FILE"
+    echo "\"Host\",\"Port\",\"Subject\",\"Issuer\",\"Keysize\",\"Serial\",\"Valid from date\",\"Valid until date\",\"self-signed\",\"Subject Alternative Names (DNS)\",\"Common Name\",\"root in stack\"" > "$OUTPUT_FILE"
 fi
 
 

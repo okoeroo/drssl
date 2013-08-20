@@ -1964,10 +1964,10 @@ append_to_csvfile(struct sslconn *conn) {
         fprintf(f, "\"%d\",", conn->port);
 
         tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
-        fprintf(f, "\"%s\",", tmp);
+        fprintf(f, "\"%s\",", tmp ? tmp : "");
         free(tmp);
         tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
-        fprintf(f, "\"%s\",", tmp);
+        fprintf(f, "\"%s\",", tmp ? tmp : "");
         free(tmp);
 
         fprintf(f, "\"%d\",", certinfo->bits);
