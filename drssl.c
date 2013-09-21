@@ -96,6 +96,11 @@ struct certinfo {
     char            *serial;
     char            *valid_notbefore;
     char            *valid_notafter;
+    char            *fingerprint_md4;
+    char            *fingerprint_md5;
+    char            *fingerprint_sha1;
+    char            *fingerprint_sha256;
+    char            *fingerprint_sha512;
     unsigned int     at_depth;
     unsigned short   selfsigned;
     unsigned short   ca;
@@ -170,6 +175,7 @@ int connect_bio_to_serv_port(struct sslconn *conn);
 int connect_ssl_over_socket(struct sslconn *conn);
 int extract_subjectaltnames(struct sslconn *conn, struct certinfo *certinfo);
 int extract_commonname(struct sslconn *conn, struct certinfo *certinfo);
+char *extract_certinfo_fingerprint(struct certinfo *certinfo, const EVP_MD *digest_method);
 int extract_certinfo_details(struct sslconn *conn, struct certinfo *certinfo);
 int extract_peer_certinfo(struct sslconn *conn);
 static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent);
@@ -967,6 +973,32 @@ extract_commonname(struct sslconn *conn, struct certinfo *certinfo) {
     return 0;
 }
 
+char *
+extract_certinfo_fingerprint(struct certinfo *certinfo, const EVP_MD *digest_method) {
+    int j;
+    unsigned int n;
+    int len = 0;
+    unsigned char md[EVP_MAX_MD_SIZE];
+    char *fingerprint = NULL;
+
+    if (!X509_digest(certinfo->cert, digest_method, md, &n)) {
+        return NULL;
+    }
+
+    for (j = 0; j < (int)n; j++) {
+        len += snprintf(NULL, 0, "%s%02X", (j == 0) ? "" : ":", md[j]);
+    }
+    len++;
+    fingerprint = malloc(len);
+    if (!fingerprint)
+        return NULL;
+
+    for (j = 0; j < (int)n; j++) {
+        snprintf(fingerprint, len, "%s%s%02X", fingerprint ? fingerprint : NULL, (j == 0) ? "" : ":", md[j]);
+    }
+    return fingerprint;
+}
+
 int
 extract_certinfo_details(struct sslconn *conn,
                          struct certinfo *certinfo) {
@@ -1000,6 +1032,12 @@ extract_certinfo_details(struct sslconn *conn,
 
     certinfo->subject_dn = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
     certinfo->issuer_dn  = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
+
+    certinfo->fingerprint_md4    = extract_certinfo_fingerprint(certinfo, EVP_md4());
+    certinfo->fingerprint_md5    = extract_certinfo_fingerprint(certinfo, EVP_md5());
+    certinfo->fingerprint_sha1   = extract_certinfo_fingerprint(certinfo, EVP_sha1());
+    certinfo->fingerprint_sha256 = extract_certinfo_fingerprint(certinfo, EVP_sha256());
+    certinfo->fingerprint_sha512 = extract_certinfo_fingerprint(certinfo, EVP_sha512());
 
     return 0;
 }
@@ -1253,6 +1291,11 @@ display_certinfo(struct certinfo *certinfo) {
         tmp_p_san = TAILQ_NEXT(p_san, entries);
     }
     fprintf(stdout, ": Common name       : %s\n", certinfo->commonname);
+    fprintf(stdout, ": Fingerprint MD4   : %s\n", certinfo->fingerprint_md4);
+    fprintf(stdout, ": Fingerprint MD5   : %s\n", certinfo->fingerprint_md5);
+    fprintf(stdout, ": Fingerprint SHA1  : %s\n", certinfo->fingerprint_sha1);
+    fprintf(stdout, ": Fingerprint SHA256: %s\n", certinfo->fingerprint_sha256);
+    fprintf(stdout, ": Fingerprint SHA512: %s\n", certinfo->fingerprint_sha512);
 
     return;
 }
