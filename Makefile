@@ -1,4 +1,4 @@
-CC=clang
+CC=gcc
 INSTALL=install
 EXEC=drssl
 CUSTOMSSL=-I/usr/local/ssl/include -L/usr/local/ssl/lib
