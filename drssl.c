@@ -1373,8 +1373,9 @@ display_conn_info(struct sslconn *conn) {
 
         fprintf(stdout, ": OCSP Stapling     : %s\n", conn->ocsp_stapling ? "Yes" : "No");
         if (conn->ocsp_stapling) {
-            fprintf(stdout, ": OCSP Stapled Resp.:\n");
-            extract_OCSP_RESPONSE_data(conn->ocsp_stapling, 0);
+            fprintf(stdout, ": OCSP Stapled Resp.: Temporarily disabled\n");
+            /* fprintf(stdout, ": OCSP Stapled Resp.:\n"); */
+            /* extract_OCSP_RESPONSE_data(conn->ocsp_stapling, 0); */
         }
 
     } else {
