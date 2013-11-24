@@ -156,7 +156,7 @@ struct sslconn {
 /* Prototypes */
 struct certinfo *create_certinfo(void);
 struct sslconn *create_sslconn(void);
-void global_ssl_init(void);
+int global_ssl_init(void);
 int x509IsCA(X509 *cert);
 char *ASN1_INTEGER_to_str(ASN1_INTEGER *a);
 char *ASN1_GENERALIZEDTIME_to_str(const ASN1_GENERALIZEDTIME *tm);
@@ -233,12 +233,16 @@ fail:
     return NULL;
 }
 
-void
+int
 global_ssl_init(void) {
     SSL_library_init();
     SSL_load_error_strings();
 
-    RAND_load_file("/dev/urandom", 1024);
+    if (RAND_load_file("/dev/urandom", 1024) == 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 /* 0: Not a CA, 1: A CA */
@@ -2385,7 +2389,8 @@ int main(int argc, char *argv[]) {
     if (conn->clientcert && !conn->clientkey) conn->clientkey = conn->clientcert;
 
     /* OpenSSL init */
-    global_ssl_init();
+    if (global_ssl_init() == -1)
+        exit(EXIT_FAILURE);
 
     return connect_to_serv_port(conn);
 }
