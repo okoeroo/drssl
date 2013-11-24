@@ -1995,16 +1995,16 @@ append_to_csvfile(struct sslconn *conn) {
     if (!conn->csvfile)
         return 1;
 
+    f = fopen(conn->csvfile, "a");
+    if (!f) {
+        fprintf(stderr, "Error: CSV file \"%s\" could not be opened: %s\n", conn->csvfile, strerror(errno));
+        return 1;
+    }
+
     for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
         /* Only the peer cert, skip the rest */
         if (certinfo->at_depth != 0) {
             continue;
-        }
-
-        f = fopen(conn->csvfile, "a");
-        if (!f) {
-            fprintf(stderr, "Error: CSV file \"%s\" could not be opened: %s\n", conn->csvfile, strerror(errno));
-            return 1;
         }
 
         fprintf(f, "\"%s\",", conn->host_ip);
@@ -2062,6 +2062,8 @@ append_to_csvfile(struct sslconn *conn) {
 
         break;
     }
+
+    fclose(f);
 
     return 0;
 }
