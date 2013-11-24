@@ -2137,33 +2137,33 @@ connect_to_serv_port(struct sslconn *conn) {
 
 void
 usage(void) {
-    printf("\n");
-    printf("DrSSL - diagnose your SSL\n");
-    printf("\t--help\n");
-    printf("\t--host <host or IP>\n");
-    printf("\t--port <port> - default is: 443\n");
-    printf("\t--4 (force IPv4 - default is system specific)\n");
-    printf("\t--6 (force IPv6 - default is system specific)\n");
-    printf("\n");
-    printf("\t--2 (use SSLv2)\n");
-    printf("\t--3 (use SSLv3)\n");
-    printf("\t--10 (use TLSv1.0) - the default\n");
-    printf("\t--11 (use TLSv1.1)\n");
-    printf("\t--12 (use TLSv1.2)\n");
-    printf("\t--cafile <path to CA (bundle) file>\n");
-    printf("\t--capath <path to CA directory>\n");
-    printf("\t--cert <path to client certificate>\n");
-    printf("\t--key <path to client private key file>\n");
-    printf("\t--passphrase <passphrase to unlock the client private key file>\n");
-    printf("\t--cipherlist <cipher list>\n");
-    printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
-    printf("\t--dumpdir <dir where all certs and info will be dumped>\n");
-    printf("\t--noverify (mute the verification callback, always 'ok')\n");
-    printf("\t--quiet (just mute)\n");
-    printf("\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
-    printf("\t--force-dump (creates dump directory if it doesn't exist yet)\n");
-    printf("\t--csvfile <path to output CSV file>\n");
-    printf("\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "DrSSL - diagnose your SSL\n");
+    fprintf(stderr, "\t--help\n");
+    fprintf(stderr, "\t--host <host or IP>\n");
+    fprintf(stderr, "\t--port <port> - default is: 443\n");
+    fprintf(stderr, "\t--4 (force IPv4 - default is system specific)\n");
+    fprintf(stderr, "\t--6 (force IPv6 - default is system specific)\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "\t--2 (use SSLv2)\n");
+    fprintf(stderr, "\t--3 (use SSLv3)\n");
+    fprintf(stderr, "\t--10 (use TLSv1.0) - the default\n");
+    fprintf(stderr, "\t--11 (use TLSv1.1)\n");
+    fprintf(stderr, "\t--12 (use TLSv1.2)\n");
+    fprintf(stderr, "\t--cafile <path to CA (bundle) file>\n");
+    fprintf(stderr, "\t--capath <path to CA directory>\n");
+    fprintf(stderr, "\t--cert <path to client certificate>\n");
+    fprintf(stderr, "\t--key <path to client private key file>\n");
+    fprintf(stderr, "\t--passphrase <passphrase to unlock the client private key file>\n");
+    fprintf(stderr, "\t--cipherlist <cipher list>\n");
+    fprintf(stderr, "\t--sni <TLS SNI (Server Name Indication) hostname>\n");
+    fprintf(stderr, "\t--dumpdir <dir where all certs and info will be dumped>\n");
+    fprintf(stderr, "\t--noverify (mute the verification callback, always 'ok')\n");
+    fprintf(stderr, "\t--quiet (just mute)\n");
+    fprintf(stderr, "\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
+    fprintf(stderr, "\t--force-dump (creates dump directory if it doesn't exist yet)\n");
+    fprintf(stderr, "\t--csvfile <path to output CSV file>\n");
+    fprintf(stderr, "\n");
 
     exit(EXIT_FAILURE);
 }
