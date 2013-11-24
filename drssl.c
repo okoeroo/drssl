@@ -125,7 +125,7 @@ struct diagnostics {
 struct sslconn {
     char *host_ip;
     char *sni;
-    unsigned short port;
+    char *port;
     int ipversion;
     int sock;
 
@@ -169,7 +169,7 @@ static int no_verify_callback(int ok, X509_STORE_CTX *store_ctx);
 static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
 int setup_client_ctx(struct sslconn *conn);
 int create_client_socket (int * client_socket, const char * server,
-                          int port, int ipversion,
+                          char *port, int ipversion,
                           int time_out_milliseconds);
 int connect_bio_to_serv_port(struct sslconn *conn);
 int connect_ssl_over_socket(struct sslconn *conn);
@@ -722,14 +722,13 @@ setup_client_ctx(struct sslconn *conn) {
 int
 create_client_socket (int * client_socket,
                       const char * server,
-                      int port,
+                      char *port,
                       int ipversion,
                       int time_out_milliseconds) {
     struct addrinfo  hints;
     struct addrinfo *res;
     int              rc;
     int              mysock = -1;
-    char             portstr[24];
     fd_set           fdset;
     int              so_error;
     socklen_t        so_error_len = sizeof so_error;
@@ -741,9 +740,7 @@ create_client_socket (int * client_socket,
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_family   = ipversion;
 
-    /* Get addrinfo */
-    snprintf(portstr, 24, "%d", port);
-    rc = getaddrinfo(server, &portstr[0], &hints, &res);
+    rc = getaddrinfo(server, port, &hints, &res);
     if (rc != 0) {
         /* fprintf(stderr, "%s Failed to getaddrinfo (%s, %s, *, *)\n", MSG_ERROR, server, portstr); */
         return 1;
@@ -800,11 +797,11 @@ connect_bio_to_serv_port(struct sslconn *conn) {
                               conn->host_ip, conn->port,
                               conn->ipversion, conn->timeout * 1000) != 0) {
         if (!conn->quiet) fprintf(stderr,
-                                  "%s failed to connect to \"%s\" on port \'%d\'\n",
+                                  "%s failed to connect to \"%s\" on port \'%s\'\n",
                                   MSG_ERROR, conn->host_ip, conn->port);
         return -2;
     }
-    if (!conn->quiet) fprintf(stderr, "%s (%s) Connected to \"%s\" on port \'%d\'\n",
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Connected to \"%s\" on port \'%s\'\n",
                                       MSG_DEBUG, __func__, conn->host_ip, conn->port);
     conn->sock = sock;
     return 0;
@@ -1318,7 +1315,7 @@ display_conn_info(struct sslconn *conn) {
     fprintf(stdout, MAKE_LIGHT_BLUE "=== Report ===" RESET_COLOR "\n");
 
     fprintf(stdout, ": Host/IP           : %s\n", conn->host_ip);
-    fprintf(stdout, ": Port              : %d\n", conn->port);
+    fprintf(stdout, ": Port              : %s\n", conn->port);
     fprintf(stdout, ": IP version        : %s\n", conn->ipversion == PF_UNSPEC ?
                                                       "Unspecified, up to system defaults" :
                                                       conn->ipversion == AF_INET6 ?
@@ -2011,7 +2008,7 @@ append_to_csvfile(struct sslconn *conn) {
         }
 
         fprintf(f, "\"%s\",", conn->host_ip);
-        fprintf(f, "\"%d\",", conn->port);
+        fprintf(f, "\"%s\",", conn->port);
 
         tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
         fprintf(f, "\"%s\",", tmp ? tmp : "");
@@ -2175,7 +2172,6 @@ usage(void) {
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
     char *timeout_s = NULL;
-    long port_l = 0;
     struct sslconn *conn; /* The Brain */
 
     static struct option long_options[] = /* options */
@@ -2213,7 +2209,7 @@ int main(int argc, char *argv[]) {
     /* Defaults */
     conn->ipversion = PF_UNSPEC;
     conn->cipherlist = CIPHER_LIST;
-    conn->port = 443; /* default HTTPS port number */
+    conn->port = "https";
     conn->sslversion = 10;
     conn->noverify = 0;
     conn->quiet = 0;
@@ -2281,13 +2277,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'p':
                 if (optarg) {
-                    port_l = strtol(optarg, NULL, 10);
-                    if ((port_l < 0) || (port_l > 65535)) {
-                        fprintf(stderr, "Error: value for port is larger then "\
-                                        "an unsigned 2^16 integer (or short)\n");
-                        return 1;
-                    }
-                    conn->port = port_l;
+                    conn->port = optarg;
                 } else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
