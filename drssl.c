@@ -221,8 +221,10 @@ create_sslconn(void) {
         goto fail;
 
     conn->diagnostics = calloc(sizeof(struct diagnostics), 1);
-    if (!conn->diagnostics)
+    if (!conn->diagnostics) {
+        free(conn);
         goto fail;
+    }
 
     TAILQ_INIT(&(conn->certinfo_head));
     TAILQ_INIT(&(conn->diagnostics->error_trace_head));
