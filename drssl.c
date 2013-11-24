@@ -2165,7 +2165,7 @@ usage(void) {
     printf("\t--csvfile <path to output CSV file>\n");
     printf("\n");
 
-    return;
+    exit(EXIT_FAILURE);
 }
 
 
@@ -2228,7 +2228,7 @@ int main(int argc, char *argv[]) {
         switch(c){
             case 'h':
                 usage();
-                return 0;
+                /* NOTREACHED */
             case '2':
                 conn->sslversion = 2;
                 break;
