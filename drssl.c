@@ -773,9 +773,14 @@ create_client_socket (int * client_socket,
             setsockopt (mysock, SOL_SOCKET, SO_KEEPALIVE, 0, 0);
 
             *client_socket = mysock;
+
+            freeaddrinfo(res);
+
             return 0;
         }
     }
+
+    freeaddrinfo(res);
 
     /* Failure */
     return 1;
