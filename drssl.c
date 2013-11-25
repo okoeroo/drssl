@@ -781,6 +781,7 @@ create_client_socket (int * client_socket,
     }
 
     freeaddrinfo(res);
+    close(mysock);
 
     /* Failure */
     return 1;
