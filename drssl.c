@@ -1542,7 +1542,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         case V_OCSP_RESPID_NAME:
             tmp = X509_NAME_oneline(rid->value.byName, NULL, 0);
             fprintf(stdout, "%s Responder ID (byName): \"%s\"\n", MSG_BLANK, tmp);
-            free(tmp);
+            OPENSSL_free(tmp);
             break;
         case V_OCSP_RESPID_KEY:
             u_tmp = ASN1_STRING_data(rid->value.byKey);
