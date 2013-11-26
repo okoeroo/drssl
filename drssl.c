@@ -1571,6 +1571,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                             MSG_OK, convert_time_t_to_utc_time_string(produced_at));
         }
         free(tmp);
+        tmp = NULL;
     }
 
     for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
@@ -1597,6 +1598,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                         ASN1_STRING_data(cid->issuerKeyHash),
                         ASN1_STRING_data(cid->serialNumber));
         free(tmp);
+        tmp = NULL;
 
         cst = single->certStatus;
         if (!cst) {
@@ -1617,6 +1619,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                     tmp = convert_time_t_to_utc_time_string(revoked_at);
                     fprintf(stdout, "%s Revocation time: %s\n", MSG_BLANK, tmp);
                     free(tmp);
+                    tmp = NULL;
 
                     if (rev->revocationReason) {
                         l = ASN1_ENUMERATED_get(rev->revocationReason);
@@ -1641,6 +1644,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
             tmp = convert_time_t_to_utc_time_string(t);
             fprintf(stdout, "%s This update: %s\n", MSG_BLANK, tmp);
             free(tmp);
+            tmp = NULL;
         }
 
         if (!single->thisUpdate) {
@@ -1651,6 +1655,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
             tmp = convert_time_t_to_utc_time_string(t);
             fprintf(stdout, "%s Next update: %s\n", MSG_BLANK, tmp);
             free(tmp);
+            tmp = NULL;
         }
 #if 0
 
