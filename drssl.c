@@ -628,7 +628,7 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
 /* Use: 2(SSLv2), 3(SSLv3), 10(TLS1.0), 11(TLS1.1), 12(TLS1.2) */
 int
 setup_client_ctx(struct sslconn *conn) {
-    int rc = 0;
+    int rc = 0, ret = 0;
 
     if (!conn)
         return -1;
@@ -665,7 +665,9 @@ setup_client_ctx(struct sslconn *conn) {
     if (SSL_CTX_set_cipher_list(conn->ctx, conn->cipherlist) != 1) {
         if (!conn->quiet) fprintf(stderr, "%s Failed to set cipher list, no valid ciphers provided in \"%s\"\n",
                                   MSG_ERROR, conn->cipherlist);
-        return -3;
+
+        ret = -3;
+        goto fail;
     }
 
     /* Add CA dir info */
@@ -685,7 +687,8 @@ setup_client_ctx(struct sslconn *conn) {
                                       MSG_ERROR,
                                       conn->clientcert,
                                       ERR_reason_error_string(ERR_get_error()));
-            return -4;
+            ret = -4;
+            goto fail;
         }
 
         rc = SSL_CTX_use_PrivateKey_file(conn->ctx, conn->clientkey, SSL_FILETYPE_PEM);
@@ -695,7 +698,8 @@ setup_client_ctx(struct sslconn *conn) {
                                       MSG_ERROR,
                                       conn->clientcert,
                                       ERR_reason_error_string(ERR_get_error()));
-            return -5;
+            ret = -5;
+            goto fail;
         }
     }
 
@@ -716,6 +720,12 @@ setup_client_ctx(struct sslconn *conn) {
 #endif
 
     return 0;
+
+fail:
+    SSL_CTX_free(conn->ctx);
+    conn->ctx = NULL;
+
+    return ret;
 }
 
 
