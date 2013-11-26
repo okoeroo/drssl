@@ -1547,7 +1547,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         case V_OCSP_RESPID_KEY:
             u_tmp = ASN1_STRING_data(rid->value.byKey);
             fprintf(stdout, "%s Responder ID (byKey): \'%s\'\n", MSG_BLANK, u_tmp);
-            free(u_tmp);
             break;
     }
 
@@ -1556,7 +1555,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         (u_tmp = ASN1_STRING_data(rd->producedAt)) &&
         u_tmp) {
         produced_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-        free(u_tmp);
         tmp = convert_time_t_to_utc_time_string(produced_at);
         if (!tmp) {
             fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
@@ -1616,7 +1614,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                 if (rev) {
                     u_tmp = ASN1_STRING_data(rev->revocationTime);
                     revoked_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-                    free(u_tmp);
                     tmp = convert_time_t_to_utc_time_string(revoked_at);
                     fprintf(stdout, "%s Revocation time: %s\n", MSG_BLANK, tmp);
                     free(tmp);
@@ -1641,7 +1638,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         } else {
             u_tmp = ASN1_STRING_data(single->thisUpdate);
             t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-            free(u_tmp);
             tmp = convert_time_t_to_utc_time_string(t);
             fprintf(stdout, "%s This update: %s\n", MSG_BLANK, tmp);
             free(tmp);
@@ -1652,7 +1648,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         } else {
             u_tmp = ASN1_STRING_data(single->nextUpdate);
             t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-            free(u_tmp);
             tmp = convert_time_t_to_utc_time_string(t);
             fprintf(stdout, "%s Next update: %s\n", MSG_BLANK, tmp);
             free(tmp);
