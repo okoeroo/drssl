@@ -558,14 +558,14 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     }
 
     if (!conn) {
-        free(issuer);
-        free(subject);
+        OPENSSL_free(issuer);
+        OPENSSL_free(subject);
     } else {
         error_trace = calloc(sizeof(struct error_trace), 1);
         if (!error_trace) {
             if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
-            free(issuer);
-            free(subject);
+            OPENSSL_free(issuer);
+            OPENSSL_free(subject);
             return 0; /* Return as a verification failure */
         }
 
@@ -1284,10 +1284,10 @@ display_certinfo(struct certinfo *certinfo) {
 
     tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
     fprintf(stdout, ": Subject DN        : %s\n", tmp);
-    free(tmp);
+    OPENSSL_free(tmp);
     tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
     fprintf(stdout, ": Issuer DN         : %s\n", tmp);
-    free(tmp);
+    OPENSSL_free(tmp);
 
     fprintf(stdout, ": Depth             : %u\n", certinfo->at_depth);
     fprintf(stdout, ": Public key bits(p): %d\n", certinfo->bits);
@@ -2018,10 +2018,10 @@ append_to_csvfile(struct sslconn *conn) {
 
         tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
         fprintf(f, "\"%s\",", tmp ? tmp : "");
-        free(tmp);
+        OPENSSL_free(tmp);
         tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
         fprintf(f, "\"%s\",", tmp ? tmp : "");
-        free(tmp);
+        OPENSSL_free(tmp);
 
         fprintf(f, "\"%d\",", certinfo->bits);
 
