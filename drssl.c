@@ -125,7 +125,7 @@ struct diagnostics {
 struct sslconn {
     char *host_ip;
     char *sni;
-    unsigned short port;
+    char *port;
     int ipversion;
     int sock;
 
@@ -156,7 +156,7 @@ struct sslconn {
 /* Prototypes */
 struct certinfo *create_certinfo(void);
 struct sslconn *create_sslconn(void);
-void global_ssl_init(void);
+int global_ssl_init(void);
 int x509IsCA(X509 *cert);
 char *ASN1_INTEGER_to_str(ASN1_INTEGER *a);
 char *ASN1_GENERALIZEDTIME_to_str(const ASN1_GENERALIZEDTIME *tm);
@@ -169,7 +169,7 @@ static int no_verify_callback(int ok, X509_STORE_CTX *store_ctx);
 static int verify_callback(int ok, X509_STORE_CTX *store_ctx);
 int setup_client_ctx(struct sslconn *conn);
 int create_client_socket (int * client_socket, const char * server,
-                          int port, int ipversion,
+                          char *port, int ipversion,
                           int time_out_milliseconds);
 int connect_bio_to_serv_port(struct sslconn *conn);
 int connect_ssl_over_socket(struct sslconn *conn);
@@ -221,8 +221,10 @@ create_sslconn(void) {
         goto fail;
 
     conn->diagnostics = calloc(sizeof(struct diagnostics), 1);
-    if (!conn->diagnostics)
+    if (!conn->diagnostics) {
+        free(conn);
         goto fail;
+    }
 
     TAILQ_INIT(&(conn->certinfo_head));
     TAILQ_INIT(&(conn->diagnostics->error_trace_head));
@@ -231,12 +233,16 @@ fail:
     return NULL;
 }
 
-void
+int
 global_ssl_init(void) {
     SSL_library_init();
     SSL_load_error_strings();
 
-    RAND_load_file("/dev/urandom", 1024);
+    if (RAND_load_file("/dev/urandom", 1024) == 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 /* 0: Not a CA, 1: A CA */
@@ -552,14 +558,14 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
     }
 
     if (!conn) {
-        free(issuer);
-        free(subject);
+        OPENSSL_free(issuer);
+        OPENSSL_free(subject);
     } else {
         error_trace = calloc(sizeof(struct error_trace), 1);
         if (!error_trace) {
             if (!conn->quiet) fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
-            free(issuer);
-            free(subject);
+            OPENSSL_free(issuer);
+            OPENSSL_free(subject);
             return 0; /* Return as a verification failure */
         }
 
@@ -622,7 +628,7 @@ verify_callback(int ok, X509_STORE_CTX *store_ctx) {
 /* Use: 2(SSLv2), 3(SSLv3), 10(TLS1.0), 11(TLS1.1), 12(TLS1.2) */
 int
 setup_client_ctx(struct sslconn *conn) {
-    int rc = 0;
+    int rc = 0, ret = 0;
 
     if (!conn)
         return -1;
@@ -659,7 +665,9 @@ setup_client_ctx(struct sslconn *conn) {
     if (SSL_CTX_set_cipher_list(conn->ctx, conn->cipherlist) != 1) {
         if (!conn->quiet) fprintf(stderr, "%s Failed to set cipher list, no valid ciphers provided in \"%s\"\n",
                                   MSG_ERROR, conn->cipherlist);
-        return -3;
+
+        ret = -3;
+        goto fail;
     }
 
     /* Add CA dir info */
@@ -679,7 +687,8 @@ setup_client_ctx(struct sslconn *conn) {
                                       MSG_ERROR,
                                       conn->clientcert,
                                       ERR_reason_error_string(ERR_get_error()));
-            return -4;
+            ret = -4;
+            goto fail;
         }
 
         rc = SSL_CTX_use_PrivateKey_file(conn->ctx, conn->clientkey, SSL_FILETYPE_PEM);
@@ -689,7 +698,8 @@ setup_client_ctx(struct sslconn *conn) {
                                       MSG_ERROR,
                                       conn->clientcert,
                                       ERR_reason_error_string(ERR_get_error()));
-            return -5;
+            ret = -5;
+            goto fail;
         }
     }
 
@@ -710,20 +720,25 @@ setup_client_ctx(struct sslconn *conn) {
 #endif
 
     return 0;
+
+fail:
+    SSL_CTX_free(conn->ctx);
+    conn->ctx = NULL;
+
+    return ret;
 }
 
 
 int
 create_client_socket (int * client_socket,
                       const char * server,
-                      int port,
+                      char *port,
                       int ipversion,
                       int time_out_milliseconds) {
     struct addrinfo  hints;
     struct addrinfo *res;
     int              rc;
     int              mysock = -1;
-    char             portstr[24];
     fd_set           fdset;
     int              so_error;
     socklen_t        so_error_len = sizeof so_error;
@@ -735,9 +750,7 @@ create_client_socket (int * client_socket,
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_family   = ipversion;
 
-    /* Get addrinfo */
-    snprintf(portstr, 24, "%d", port);
-    rc = getaddrinfo(server, &portstr[0], &hints, &res);
+    rc = getaddrinfo(server, port, &hints, &res);
     if (rc != 0) {
         /* fprintf(stderr, "%s Failed to getaddrinfo (%s, %s, *, *)\n", MSG_ERROR, server, portstr); */
         return 1;
@@ -770,9 +783,15 @@ create_client_socket (int * client_socket,
             setsockopt (mysock, SOL_SOCKET, SO_KEEPALIVE, 0, 0);
 
             *client_socket = mysock;
+
+            freeaddrinfo(res);
+
             return 0;
         }
     }
+
+    freeaddrinfo(res);
+    close(mysock);
 
     /* Failure */
     return 1;
@@ -794,11 +813,11 @@ connect_bio_to_serv_port(struct sslconn *conn) {
                               conn->host_ip, conn->port,
                               conn->ipversion, conn->timeout * 1000) != 0) {
         if (!conn->quiet) fprintf(stderr,
-                                  "%s failed to connect to \"%s\" on port \'%d\'\n",
+                                  "%s failed to connect to \"%s\" on port \'%s\'\n",
                                   MSG_ERROR, conn->host_ip, conn->port);
         return -2;
     }
-    if (!conn->quiet) fprintf(stderr, "%s (%s) Connected to \"%s\" on port \'%d\'\n",
+    if (!conn->quiet) fprintf(stderr, "%s (%s) Connected to \"%s\" on port \'%s\'\n",
                                       MSG_DEBUG, __func__, conn->host_ip, conn->port);
     conn->sock = sock;
     return 0;
@@ -1275,10 +1294,10 @@ display_certinfo(struct certinfo *certinfo) {
 
     tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
     fprintf(stdout, ": Subject DN        : %s\n", tmp);
-    free(tmp);
+    OPENSSL_free(tmp);
     tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
     fprintf(stdout, ": Issuer DN         : %s\n", tmp);
-    free(tmp);
+    OPENSSL_free(tmp);
 
     fprintf(stdout, ": Depth             : %u\n", certinfo->at_depth);
     fprintf(stdout, ": Public key bits(p): %d\n", certinfo->bits);
@@ -1312,7 +1331,7 @@ display_conn_info(struct sslconn *conn) {
     fprintf(stdout, MAKE_LIGHT_BLUE "=== Report ===" RESET_COLOR "\n");
 
     fprintf(stdout, ": Host/IP           : %s\n", conn->host_ip);
-    fprintf(stdout, ": Port              : %d\n", conn->port);
+    fprintf(stdout, ": Port              : %s\n", conn->port);
     fprintf(stdout, ": IP version        : %s\n", conn->ipversion == PF_UNSPEC ?
                                                       "Unspecified, up to system defaults" :
                                                       conn->ipversion == AF_INET6 ?
@@ -1533,12 +1552,11 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         case V_OCSP_RESPID_NAME:
             tmp = X509_NAME_oneline(rid->value.byName, NULL, 0);
             fprintf(stdout, "%s Responder ID (byName): \"%s\"\n", MSG_BLANK, tmp);
-            free(tmp);
+            OPENSSL_free(tmp);
             break;
         case V_OCSP_RESPID_KEY:
             u_tmp = ASN1_STRING_data(rid->value.byKey);
             fprintf(stdout, "%s Responder ID (byKey): \'%s\'\n", MSG_BLANK, u_tmp);
-            free(u_tmp);
             break;
     }
 
@@ -1547,7 +1565,6 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         (u_tmp = ASN1_STRING_data(rd->producedAt)) &&
         u_tmp) {
         produced_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-        free(u_tmp);
         tmp = convert_time_t_to_utc_time_string(produced_at);
         if (!tmp) {
             fprintf(stderr, "%s (%s) Out of memory\n", MSG_ERROR, __func__);
@@ -1564,6 +1581,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                             MSG_OK, convert_time_t_to_utc_time_string(produced_at));
         }
         free(tmp);
+        tmp = NULL;
     }
 
     for (i = 0; i < sk_OCSP_SINGLERESP_num(rd->responses); i++) {
@@ -1590,6 +1608,7 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                         ASN1_STRING_data(cid->issuerKeyHash),
                         ASN1_STRING_data(cid->serialNumber));
         free(tmp);
+        tmp = NULL;
 
         cst = single->certStatus;
         if (!cst) {
@@ -1607,10 +1626,10 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
                 if (rev) {
                     u_tmp = ASN1_STRING_data(rev->revocationTime);
                     revoked_at = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-                    free(u_tmp);
                     tmp = convert_time_t_to_utc_time_string(revoked_at);
                     fprintf(stdout, "%s Revocation time: %s\n", MSG_BLANK, tmp);
                     free(tmp);
+                    tmp = NULL;
 
                     if (rev->revocationReason) {
                         l = ASN1_ENUMERATED_get(rev->revocationReason);
@@ -1632,10 +1651,10 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         } else {
             u_tmp = ASN1_STRING_data(single->thisUpdate);
             t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-            free(u_tmp);
             tmp = convert_time_t_to_utc_time_string(t);
             fprintf(stdout, "%s This update: %s\n", MSG_BLANK, tmp);
             free(tmp);
+            tmp = NULL;
         }
 
         if (!single->thisUpdate) {
@@ -1643,10 +1662,10 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
         } else {
             u_tmp = ASN1_STRING_data(single->nextUpdate);
             t = grid_asn1TimeToTimeT(u_tmp, strlen((char *)u_tmp));
-            free(u_tmp);
             tmp = convert_time_t_to_utc_time_string(t);
             fprintf(stdout, "%s Next update: %s\n", MSG_BLANK, tmp);
             free(tmp);
+            tmp = NULL;
         }
 #if 0
 
@@ -1992,27 +2011,27 @@ append_to_csvfile(struct sslconn *conn) {
     if (!conn->csvfile)
         return 1;
 
+    f = fopen(conn->csvfile, "a");
+    if (!f) {
+        fprintf(stderr, "Error: CSV file \"%s\" could not be opened: %s\n", conn->csvfile, strerror(errno));
+        return 1;
+    }
+
     for (certinfo = TAILQ_FIRST(&(conn->certinfo_head)); certinfo != NULL; certinfo = tmp_certinfo) {
         /* Only the peer cert, skip the rest */
         if (certinfo->at_depth != 0) {
             continue;
         }
 
-        f = fopen(conn->csvfile, "a");
-        if (!f) {
-            fprintf(stderr, "Error: CSV file \"%s\" could not be opened: %s\n", conn->csvfile, strerror(errno));
-            return 1;
-        }
-
         fprintf(f, "\"%s\",", conn->host_ip);
-        fprintf(f, "\"%d\",", conn->port);
+        fprintf(f, "\"%s\",", conn->port);
 
         tmp = X509_NAME_oneline(X509_get_subject_name(certinfo->cert), NULL, 0);
         fprintf(f, "\"%s\",", tmp ? tmp : "");
-        free(tmp);
+        OPENSSL_free(tmp);
         tmp = X509_NAME_oneline(X509_get_issuer_name(certinfo->cert), NULL, 0);
         fprintf(f, "\"%s\",", tmp ? tmp : "");
-        free(tmp);
+        OPENSSL_free(tmp);
 
         fprintf(f, "\"%d\",", certinfo->bits);
 
@@ -2059,6 +2078,8 @@ append_to_csvfile(struct sslconn *conn) {
 
         break;
     }
+
+    fclose(f);
 
     return 0;
 }
@@ -2134,42 +2155,41 @@ connect_to_serv_port(struct sslconn *conn) {
 
 void
 usage(void) {
-    printf("\n");
-    printf("DrSSL - diagnose your SSL\n");
-    printf("\t--help\n");
-    printf("\t--host <host or IP>\n");
-    printf("\t--port <port> - default is: 443\n");
-    printf("\t--4 (force IPv4 - default is system specific)\n");
-    printf("\t--6 (force IPv6 - default is system specific)\n");
-    printf("\n");
-    printf("\t--2 (use SSLv2)\n");
-    printf("\t--3 (use SSLv3)\n");
-    printf("\t--10 (use TLSv1.0) - the default\n");
-    printf("\t--11 (use TLSv1.1)\n");
-    printf("\t--12 (use TLSv1.2)\n");
-    printf("\t--cafile <path to CA (bundle) file>\n");
-    printf("\t--capath <path to CA directory>\n");
-    printf("\t--cert <path to client certificate>\n");
-    printf("\t--key <path to client private key file>\n");
-    printf("\t--passphrase <passphrase to unlock the client private key file>\n");
-    printf("\t--cipherlist <cipher list>\n");
-    printf("\t--sni <TLS SNI (Server Name Indication) hostname>\n");
-    printf("\t--dumpdir <dir where all certs and info will be dumped>\n");
-    printf("\t--noverify (mute the verification callback, always 'ok')\n");
-    printf("\t--quiet (just mute)\n");
-    printf("\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
-    printf("\t--force-dump (creates dump directory if it doesn't exist yet)\n");
-    printf("\t--csvfile <path to output CSV file>\n");
-    printf("\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "DrSSL - diagnose your SSL\n");
+    fprintf(stderr, "\t--help\n");
+    fprintf(stderr, "\t--host <host or IP>\n");
+    fprintf(stderr, "\t--port <port> - default is: 443\n");
+    fprintf(stderr, "\t--4 (force IPv4 - default is system specific)\n");
+    fprintf(stderr, "\t--6 (force IPv6 - default is system specific)\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "\t--2 (use SSLv2)\n");
+    fprintf(stderr, "\t--3 (use SSLv3)\n");
+    fprintf(stderr, "\t--10 (use TLSv1.0) - the default\n");
+    fprintf(stderr, "\t--11 (use TLSv1.1)\n");
+    fprintf(stderr, "\t--12 (use TLSv1.2)\n");
+    fprintf(stderr, "\t--cafile <path to CA (bundle) file>\n");
+    fprintf(stderr, "\t--capath <path to CA directory>\n");
+    fprintf(stderr, "\t--cert <path to client certificate>\n");
+    fprintf(stderr, "\t--key <path to client private key file>\n");
+    fprintf(stderr, "\t--passphrase <passphrase to unlock the client private key file>\n");
+    fprintf(stderr, "\t--cipherlist <cipher list>\n");
+    fprintf(stderr, "\t--sni <TLS SNI (Server Name Indication) hostname>\n");
+    fprintf(stderr, "\t--dumpdir <dir where all certs and info will be dumped>\n");
+    fprintf(stderr, "\t--noverify (mute the verification callback, always 'ok')\n");
+    fprintf(stderr, "\t--quiet (just mute)\n");
+    fprintf(stderr, "\t--timeout <seconds> (max time to setup the TCP/IP connection)\n");
+    fprintf(stderr, "\t--force-dump (creates dump directory if it doesn't exist yet)\n");
+    fprintf(stderr, "\t--csvfile <path to output CSV file>\n");
+    fprintf(stderr, "\n");
 
-    return;
+    exit(EXIT_FAILURE);
 }
 
 
 int main(int argc, char *argv[]) {
     int option_index = 0, c = 0;    /* getopt */
     char *timeout_s = NULL;
-    long port_l = 0;
     struct sslconn *conn; /* The Brain */
 
     static struct option long_options[] = /* options */
@@ -2207,7 +2227,7 @@ int main(int argc, char *argv[]) {
     /* Defaults */
     conn->ipversion = PF_UNSPEC;
     conn->cipherlist = CIPHER_LIST;
-    conn->port = 443; /* default HTTPS port number */
+    conn->port = "https";
     conn->sslversion = 10;
     conn->noverify = 0;
     conn->quiet = 0;
@@ -2226,7 +2246,7 @@ int main(int argc, char *argv[]) {
         switch(c){
             case 'h':
                 usage();
-                return 0;
+                /* NOTREACHED */
             case '2':
                 conn->sslversion = 2;
                 break;
@@ -2275,13 +2295,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'p':
                 if (optarg) {
-                    port_l = strtol(optarg, NULL, 10);
-                    if ((port_l < 0) || (port_l > 65535)) {
-                        fprintf(stderr, "Error: value for port is larger then "\
-                                        "an unsigned 2^16 integer (or short)\n");
-                        return 1;
-                    }
-                    conn->port = port_l;
+                    conn->port = optarg;
                 } else {
                     fprintf(stderr, "Error: expecting a parameter.\n");
                     usage();
@@ -2383,7 +2397,8 @@ int main(int argc, char *argv[]) {
     if (conn->clientcert && !conn->clientkey) conn->clientkey = conn->clientcert;
 
     /* OpenSSL init */
-    global_ssl_init();
+    if (global_ssl_init() == -1)
+        exit(EXIT_FAILURE);
 
     return connect_to_serv_port(conn);
 }
