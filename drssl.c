@@ -645,18 +645,19 @@ setup_client_ctx(struct sslconn *conn) {
         case 10:
             conn->ctx = SSL_CTX_new(TLSv1_client_method());
             break;
-#ifdef HAVE_TLSV1_1_CLIENT_METHOD
+#if OPENSSL_VERSION_NUMBER >= 0x1000100fL
         case 11:
             conn->ctx = SSL_CTX_new(TLSv1_1_client_method());
             break;
 #endif
-#ifdef HAVE_TLSV1_2_CLIENT_METHOD
+#if OPENSSL_VERSION_NUMBER >= 0x1000103fL
         case 12:
             conn->ctx = SSL_CTX_new(TLSv1_2_client_method());
             break;
 #endif
         default:
-            if (!conn->quiet) fprintf(stderr, "Wrong SSL version/type provided to %s()\n",
+            if (!conn->quiet) fprintf(stderr, "Wrong SSL version/type. Probably build against "
+                                              "OpenSSL without the selected TLS version %s()\n",
                                       __func__);
             return -2;
     }
