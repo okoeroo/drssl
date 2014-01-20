@@ -58,6 +58,12 @@
 
 #define COLOR(c,str) c str RESET_COLOR
 
+/* Used in the hostcert_match */
+#define MATCH_NONE  0
+#define MATCH_PLAIN 1
+#define MATCH_WILD  2
+#define MATCH_MALFORMED 4
+
 
 /* Types */
 struct error_trace {
@@ -182,6 +188,7 @@ static int ocsp_certid_print(BIO *bp, OCSP_CERTID* a, int indent);
 int extract_OCSP_RESPONSE_data(OCSP_RESPONSE* o, unsigned long flags);
 void display_certinfo(struct certinfo *certinfo);
 void display_conn_info(struct sslconn *conn);
+unsigned short hostcert_match(const char *hostname, const char *pattern);
 void diagnose_conn_info(struct sslconn *conn);
 void diagnose_error_trace(struct sslconn *conn);
 void display_error_trace(struct sslconn *conn);
@@ -1696,6 +1703,68 @@ diagnose_ocsp(struct sslconn *conn, OCSP_RESPONSE *ocsp, X509 *origincert, unsig
 #endif
 }
 
+unsigned short
+hostcert_match(const char *hostname, const char *pattern) {
+    unsigned int p;
+    const char *hostname_tmp, *hostname_tmp2, *pattern_tmp, *pattern_tmp2;
+
+    /* When there is no wildcard in the pattern to match,
+       go for the case insensitive full string match */
+    pattern_tmp = strchr(pattern, '*');
+    if (pattern_tmp == NULL) {
+        if (strcasecmp(hostname, pattern) == 0) {
+            return MATCH_PLAIN;
+        } else {
+            return MATCH_NONE;
+        }
+    }
+
+    hostname_tmp = hostname_tmp2 = hostname;
+    pattern_tmp = pattern_tmp2 = pattern;
+
+    while (pattern_tmp != NULL) {
+        /* printf("p: %d, pattern: %s, pattern_tmp: %s, hostname: %s, hostname_tmp: %s\n", */
+                /* p, pattern, pattern_tmp, hostname, hostname_tmp); */
+
+        /* Find the delimiter */
+        pattern_tmp2  = strchr(pattern_tmp, '.');
+        hostname_tmp2 = strchr(hostname_tmp, '.');
+
+        /* Both at the same time at the end of the file */
+        if (pattern_tmp2 == NULL && hostname_tmp2 == NULL) {
+            return MATCH_WILD;
+        /* One or the other is NULL, uneven means not equal */
+        } else if (pattern_tmp2 == NULL || hostname_tmp2 == NULL) {
+            return MATCH_NONE;
+        }
+
+        /* On wildcard, progress beyond the accepted string to the delimiter */
+        if (pattern_tmp[0] == '*') {
+            /* Forward beyond the delimiter */
+            pattern_tmp = &pattern_tmp2[1];
+            hostname_tmp = &hostname_tmp2[1];
+            continue;
+        }
+
+        /* Run the pattern or hostname part upto the delimiter. On diff: no match */
+        for (p = 0; p < strlen(pattern_tmp) - strlen(pattern_tmp2); p++) {
+
+            if (pattern_tmp[p] != hostname_tmp[p]) {
+                return MATCH_NONE;
+            }
+        }
+
+        /* Forward beyond the delimiter */
+        pattern_tmp = &pattern_tmp2[1];
+        hostname_tmp = &hostname_tmp2[1];
+        continue;
+    }
+    /* Should never reach it, but when it does, go bust */
+    return MATCH_NONE;
+}
+
+
+
 void
 diagnose_conn_info(struct sslconn *conn) {
     struct certinfo       *certinfo = NULL, *tmp_certinfo = NULL, *peer_certinfo = NULL;
@@ -1704,7 +1773,7 @@ diagnose_conn_info(struct sslconn *conn) {
     /* time_t                 server_time_s; */
     /* struct tm              result; */
     /* const SSL_CIPHER      *c; */
-    unsigned short         found_san = 0;
+    unsigned short         rt = MATCH_NONE;
     int                    ssl_verify_result;
 
     if (!conn)
@@ -1788,33 +1857,54 @@ diagnose_conn_info(struct sslconn *conn) {
                             MSG_WARNING);
 
             /* Check Common Name */
-            if (!strcasecmp(peer_certinfo->commonname, conn->host_ip)) {
-                fprintf(stdout, "%s RFC2818 check: legacy peer certificate "\
-                                "matched most significant Common Name.\n",
-                                MSG_OK);
-            } else {
-                fprintf(stdout, "%s RFC2818 check failed: legacy peer certificate's "\
-                                "most significant Common Name did not match the "\
-                                "Hostname or IP address of the server.\n",
-                                MSG_ERROR);
+            switch (hostcert_match(conn->host_ip, peer_certinfo->commonname)) {
+                case MATCH_WILD:
+                    fprintf(stdout, "%s RFC2818 check: legacy peer certificate "\
+                                    "matched most significant Common Name by wildcard.\n",
+                                    MSG_OK);
+                    break;
+                case MATCH_PLAIN:
+                    fprintf(stdout, "%s RFC2818 check: legacy peer certificate "\
+                                    "matched most significant Common Name.\n",
+                                    MSG_OK);
+                    break;
+                default:
+                case MATCH_NONE:
+                    fprintf(stdout, "%s RFC2818 check failed: legacy peer certificate's "\
+                                    "most significant Common Name did not match the "\
+                                    "Hostname or IP address of the server.\n",
+                                    MSG_ERROR);
+                    break;
             }
         } else {
             /* Check SAN */
             for (p_san = TAILQ_FIRST(&(peer_certinfo->san_head)); p_san != NULL; p_san = tmp_p_san) {
-                if (!strcasecmp(p_san->value, conn->host_ip)) {
-                    fprintf(stdout, "%s RFC2818 check: peer certificate matched "\
-                                    "Subject Alt Name\n",
-                                    MSG_OK);
-                    found_san = 1;
+                rt = hostcert_match(conn->host_ip, p_san->value);
+                if (rt != MATCH_NONE) {
+                    break;
                 }
                 tmp_p_san = TAILQ_NEXT(p_san, entries);
             }
-            if (!found_san) {
-                fprintf(stdout, "%s RFC2818 check failed: Peer certificate has "\
-                                "Subject Alt Names, but none match the "\
-                                "Hostname or IP address of the server. "\
-                                "Untrusted connection.\n",
-                                MSG_ERROR);
+
+            switch (rt) {
+                case MATCH_WILD:
+                    fprintf(stdout, "%s RFC2818 check: peer certificate matched by wildcard "\
+                                    "Subject Alt Name\n",
+                                    MSG_OK);
+                    break;
+                case MATCH_PLAIN:
+                    fprintf(stdout, "%s RFC2818 check: peer certificate matched "\
+                                    "Subject Alt Name\n",
+                                    MSG_OK);
+                    break;
+                default:
+                case MATCH_NONE:
+                    fprintf(stdout, "%s RFC2818 check failed: Peer certificate has "\
+                                    "Subject Alt Names, but none match the "\
+                                    "Hostname or IP address of the server. "\
+                                    "Untrusted connection.\n",
+                                    MSG_ERROR);
+                    break;
             }
         }
     }
