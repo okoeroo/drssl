@@ -875,6 +875,15 @@ connect_ssl_over_socket(struct sslconn *conn) {
         return -4;
     }
 
+    /* Hack */
+    long rc;
+    rc = SSL_heartbeat(conn->ssl);
+    if (rc < 0) {
+        printf("No heartbeat available (rc: %ld)\n", rc);
+    } else {
+        printf("Heartbeat available, potentially vulnerable! (rc: %ld)\n", rc);
+    }
+
     return 0;
 }
 
