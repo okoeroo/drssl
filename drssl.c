@@ -1025,12 +1025,12 @@ extract_certinfo_fingerprint(struct certinfo *certinfo, const EVP_MD *digest_met
         len += snprintf(NULL, 0, "%s%02X", (j == 0) ? "" : ":", md[j]);
     }
     len++;
-    fingerprint = malloc(len);
+    fingerprint = calloc(1, len);
     if (!fingerprint)
         return NULL;
 
     for (j = 0; j < (int)n; j++) {
-        snprintf(fingerprint, len, "%s%s%02X", fingerprint ? fingerprint : NULL, (j == 0) ? "" : ":", md[j]);
+        snprintf(fingerprint, len, "%s%s%02X", fingerprint, (j == 0) ? "" : ":", md[j]);
     }
     return fingerprint;
 }
