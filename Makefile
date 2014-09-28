@@ -1,7 +1,7 @@
 CC=gcc
 INSTALL=install
 EXEC=drssl
-CUSTOMSSL=-I/usr/local/ssl/include -L/usr/local/ssl/lib
+CUSTOMSSL=-I/usr/local/include -L/usr/local/lib
 DESTDIR=/usr/local
 
 

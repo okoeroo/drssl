@@ -876,6 +876,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
     }
 
     /* Hack */
+#if 0
     long rc;
     rc = SSL_heartbeat(conn->ssl);
     if (rc < 0) {
@@ -883,6 +884,7 @@ connect_ssl_over_socket(struct sslconn *conn) {
     } else {
         printf("Heartbeat available, potentially vulnerable! (rc: %ld)\n", rc);
     }
+#endif
 
     return 0;
 }
@@ -1343,7 +1345,7 @@ display_conn_info(struct sslconn *conn) {
     time_t                 server_time_s;
     char                  *buf;
     const SSL_CIPHER      *c;
-    const COMP_METHOD     *comp, *expansion;
+    const void            *comp, *expansion;
 
     fprintf(stdout, MAKE_LIGHT_BLUE "=== Report ===" RESET_COLOR "\n");
 
